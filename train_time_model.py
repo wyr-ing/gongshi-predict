@@ -203,56 +203,6 @@ def train_prediction_model(df):
     return model, poly, r2, mae, mape, residuals, y_pred
 
 # ============================================================
-# 检测异常数据（基于残差标准差，可调阈值）
-# ============================================================
-def detect_outliers_by_std(df, model, poly, threshold_std=3.0):
-    """
-    基于残差标准差检测异常数据
-    threshold_std: 标准差倍数，值越大越宽松
-    """
-    if len(df) < 2:
-        return df, pd.DataFrame(), [], {'total_count': len(df), 'outlier_count': 0, 'clean_count': len(df), 'outlier_ratio': 0, 'threshold_std': threshold_std, 'threshold_value': 0, 'std_residual': 0, 'mean_residual': 0}
-    
-    X = df[['点位数']].values
-    y = df['实际工时'].values
-    
-    X_poly = poly.transform(X)
-    y_pred = model.predict(X_poly)
-    
-    residuals = y - y_pred
-    std_residual = np.std(residuals, ddof=1) if len(residuals) > 1 else 0
-    mean_residual = np.mean(residuals)
-    
-    # 计算阈值
-    threshold = threshold_std * std_residual if std_residual > 0 else float('inf')
-    
-    # 检测异常（残差绝对值超出阈值）
-    outlier_mask = np.abs(residuals) > threshold if threshold != float('inf') else np.zeros(len(df), dtype=bool)
-    
-    outlier_indices = df.index[outlier_mask].tolist()
-    outlier_data = df.loc[outlier_mask].copy()
-    if len(outlier_data) > 0:
-        outlier_data['残差'] = residuals[outlier_mask]
-        outlier_data['预测值'] = y_pred[outlier_mask]
-        outlier_data['残差百分比'] = (residuals[outlier_mask] / y[outlier_mask] * 100)
-    
-    # 正常数据
-    clean_df = df.loc[~outlier_mask].copy()
-    
-    stats = {
-        'total_count': len(df),
-        'outlier_count': len(outlier_data),
-        'clean_count': len(clean_df),
-        'outlier_ratio': len(outlier_data) / len(df) * 100 if len(df) > 0 else 0,
-        'threshold_std': threshold_std,
-        'threshold_value': threshold if threshold != float('inf') else 0,
-        'std_residual': std_residual,
-        'mean_residual': mean_residual
-    }
-    
-    return clean_df, outlier_data, outlier_indices, stats
-
-# ============================================================
 # 理论工时计算
 # ============================================================
 def calculate_theory_time(point_count, a=0.0362, b=0.5):
@@ -261,7 +211,7 @@ def calculate_theory_time(point_count, a=0.0362, b=0.5):
 # ============================================================
 # 对比图（自适应版）
 # ============================================================
-def plot_chart(df, model, poly, mape, point_count=None, predicted_time=None, outlier_df=None, line_type="SMT"):
+def plot_chart(df, model, poly, mape, point_count=None, predicted_time=None, line_type="SMT"):
     
     screen = get_screen_size()
     
@@ -284,16 +234,9 @@ def plot_chart(df, model, poly, mape, point_count=None, predicted_time=None, out
     fig, ax = plt.subplots(figsize=(screen['fig_width'], screen['fig_height']), dpi=100)
     fig.subplots_adjust(left=0.08, right=0.95, top=0.92, bottom=0.12)
 
-    # 正常数据点
+    # 数据点
     ax.scatter(X, y, color='#1f77b4', s=screen['marker_size'], alpha=0.7, 
-               label='Normal Data', zorder=3)
-    
-    # 异常数据点
-    if outlier_df is not None and len(outlier_df) > 0:
-        ax.scatter(outlier_df['点位数'], outlier_df['实际工时'], 
-                   color='red', s=screen['marker_size'] * 1.8, alpha=0.8,
-                   marker='x', linewidth=2.5,
-                   label=f'Outliers ({len(outlier_df)} removed)', zorder=5)
+               label='Data Points', zorder=3)
     
     # 预测曲线
     ax.plot(X_smooth, y_pred_smooth, color='#d62728', linewidth=2.5, 
@@ -328,8 +271,6 @@ def plot_chart(df, model, poly, mape, point_count=None, predicted_time=None, out
     
     # 标题 - 显示产线类型
     title = f'📊 {line_type} Manhour Prediction Chart'
-    if outlier_df is not None and len(outlier_df) > 0:
-        title += f' (Auto-cleaned: {len(outlier_df)} outliers removed)'
     ax.set_title(title, fontsize=screen['title_size'], fontweight='bold', pad=15)
     
     ax.grid(True, alpha=0.25, linestyle='--')
@@ -474,11 +415,7 @@ for line_type in ["SMT", "DIP"]:
         st.session_state[f"df_{line_type}"] = None
         st.session_state[f"r2_{line_type}"] = None
         st.session_state[f"mae_{line_type}"] = None
-        st.session_state[f"residuals_{line_type}"] = None
-        st.session_state[f"outlier_df_{line_type}"] = None
-        st.session_state[f"clean_stats_{line_type}"] = None
         st.session_state[f"raw_df_{line_type}"] = None
-        st.session_state[f"outlier_threshold_{line_type}"] = 3.0
 
 if "upload_authorized" not in st.session_state:
     st.session_state.upload_authorized = False
@@ -501,33 +438,18 @@ def load_data_for_line(line_type):
     if saved_df is not None and len(saved_df) > 0:
         st.session_state[f"raw_df_{line_type}"] = saved_df.copy()
         
-        # 先用所有数据训练一次，获取残差
-        temp_model, temp_poly, temp_r2, temp_mae, temp_mape, temp_residuals, temp_y_pred = train_prediction_model(saved_df)
+        # 训练模型
+        model, poly, r2, mae, mape, residuals, y_pred = train_prediction_model(saved_df)
         
-        if temp_model is not None:
-            # 检测异常（使用当前阈值）
-            threshold = st.session_state.get(f"outlier_threshold_{line_type}", 3.0)
-            clean_df, outlier_df, outlier_indices, stats = detect_outliers_by_std(
-                saved_df, temp_model, temp_poly, threshold
-            )
-            
-            st.session_state[f"outlier_df_{line_type}"] = outlier_df
-            st.session_state[f"clean_stats_{line_type}"] = stats
-            
-            # 用清理后的数据训练最终模型
-            df_to_use = clean_df if len(clean_df) > 0 else saved_df
-            model, poly, r2, mae, mape, residuals, y_pred = train_prediction_model(df_to_use)
-            
-            if model is not None:
-                st.session_state[f"model_trained_{line_type}"] = True
-                st.session_state[f"model_{line_type}"] = model
-                st.session_state[f"poly_{line_type}"] = poly
-                st.session_state[f"r2_{line_type}"] = r2
-                st.session_state[f"mae_{line_type}"] = mae
-                st.session_state[f"mape_{line_type}"] = mape
-                st.session_state[f"df_{line_type}"] = df_to_use
-                st.session_state[f"residuals_{line_type}"] = residuals
-                return True
+        if model is not None:
+            st.session_state[f"model_trained_{line_type}"] = True
+            st.session_state[f"model_{line_type}"] = model
+            st.session_state[f"poly_{line_type}"] = poly
+            st.session_state[f"r2_{line_type}"] = r2
+            st.session_state[f"mae_{line_type}"] = mae
+            st.session_state[f"mape_{line_type}"] = mape
+            st.session_state[f"df_{line_type}"] = saved_df
+            return True
     return False
 
 # 自动加载SMT和DIP数据
@@ -561,76 +483,11 @@ with st.sidebar:
     
     if is_trained and df is not None:
         st.success(f"✅ 当前数据：{len(df)} 行 ({line_type})")
-        stats = st.session_state.get(f"clean_stats_{line_type}")
-        if stats is not None and stats['outlier_count'] > 0:
-            st.info(f"🧹 已剔除 {stats['outlier_count']} 个异常数据")
     else:
         st.warning(f"⚠️ 暂无{line_type}数据")
 
     st.markdown("---")
     
-    # ============================================================
-    # 异常剔除阈值设置（核心功能）
-    # ============================================================
-    st.markdown("#### 🎯 异常剔除阈值")
-    st.caption("数值越大，剔除越少（越宽松）")
-    
-    current_threshold = st.session_state.get(f"outlier_threshold_{line_type}", 3.0)
-    
-    # 滑块：0~5，步长0.1，默认3.0
-    threshold_value = st.slider(
-        "标准差倍数",
-        min_value=0.0,
-        max_value=5.0,
-        value=current_threshold,
-        step=0.1,
-        key=f"threshold_slider_{line_type}",
-        help="0=不剔除，数值越大剔除越少"
-    )
-    
-    # 显示当前设置的效果
-    if threshold_value == 0:
-        st.info("🔓 当前：不剔除任何数据")
-    elif threshold_value <= 2.0:
-        st.warning("⚠️ 当前：严格模式（剔除较多）")
-    elif threshold_value <= 3.5:
-        st.info("✅ 当前：标准模式（推荐）")
-    else:
-        st.success("✅ 当前：宽松模式（剔除较少）")
-    
-    # 如果阈值改变，重新训练
-    if threshold_value != current_threshold:
-        st.session_state[f"outlier_threshold_{line_type}"] = threshold_value
-        st.session_state[f"model_trained_{line_type}"] = False
-        st.rerun()
-    
-    # 显示异常统计
-    stats = st.session_state.get(f"clean_stats_{line_type}")
-    if stats is not None:
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("异常数量", stats['outlier_count'])
-        with col2:
-            st.metric("占比", f"{stats['outlier_ratio']:.1f}%")
-        
-        st.caption(f"当前阈值：±{stats['threshold_value']:.2f} 秒")
-        st.caption(f"残差标准差：±{stats['std_residual']:.2f} 秒")
-    
-    # 查看异常数据详情
-    outlier_df = st.session_state.get(f"outlier_df_{line_type}")
-    if outlier_df is not None and len(outlier_df) > 0:
-        with st.expander(f"📋 查看异常数据 ({len(outlier_df)}个)"):
-            display_df = outlier_df[['点位数', '实际工时', '预测值', '残差', '残差百分比']].copy()
-            display_df['残差百分比'] = display_df['残差百分比'].round(2)
-            st.dataframe(display_df, use_container_width=True)
-    
-    # 重置按钮
-    if st.button("🔄 重置为默认 (3.0倍标准差)", use_container_width=True):
-        st.session_state[f"outlier_threshold_{line_type}"] = 3.0
-        st.session_state[f"model_trained_{line_type}"] = False
-        st.rerun()
-
-    st.markdown("---")
     st.markdown("#### 🔒 管理员验证")
     admin_pwd = st.text_input("上传密码", type="password", key="admin_pwd")
     if st.button("验证并上传", use_container_width=True):
@@ -711,14 +568,6 @@ with left_col:
         with st.container():
             st.markdown("### 📊 模型评估")
             
-            # 显示清理信息
-            stats = st.session_state.get(f"clean_stats_{line_type}")
-            if stats is not None:
-                if stats['outlier_count'] > 0:
-                    st.info(f"🧹 已剔除 {stats['outlier_count']} 个异常数据，使用 {len(df)} 条干净数据训练")
-                else:
-                    st.success("✅ 数据质量良好，无异常数据")
-            
             col1, col2, col3 = st.columns(3)
             with col1:
                 r2_val = st.session_state.get(f"r2_{line_type}")
@@ -735,7 +584,6 @@ with left_col:
             
             plot_placeholder = st.empty()
             
-            outlier_df = st.session_state.get(f"outlier_df_{line_type}")
             model = st.session_state.get(f"model_{line_type}")
             poly = st.session_state.get(f"poly_{line_type}")
             mape = st.session_state.get(f"mape_{line_type}")
@@ -749,7 +597,6 @@ with left_col:
                         mape,
                         point_count=st.session_state.last_prediction.get("point_count"),
                         predicted_time=st.session_state.last_prediction.get("predicted"),
-                        outlier_df=outlier_df,
                         line_type=line_type
                     )
                     plot_placeholder.pyplot(fig, use_container_width=True)
@@ -760,7 +607,6 @@ with left_col:
                         model, 
                         poly, 
                         mape,
-                        outlier_df=outlier_df,
                         line_type=line_type
                     )
                     plot_placeholder.pyplot(fig, use_container_width=True)
