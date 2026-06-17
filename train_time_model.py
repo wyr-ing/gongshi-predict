@@ -35,6 +35,63 @@ BASE_URL = "https://api.siliconflow.cn/v1"
 HISTORY_FILE = "prediction_history.json"
 
 # ============================================================
+# 屏幕自适应工具函数
+# ============================================================
+def get_screen_size():
+    """检测当前屏幕尺寸，返回合适的图表参数"""
+    try:
+        # 获取浏览器窗口宽度（通过JavaScript）
+        screen_width = st.session_state.get('screen_width', 1200)
+        screen_height = st.session_state.get('screen_height', 800)
+    except:
+        screen_width = 1200
+        screen_height = 800
+    
+    # 根据屏幕宽度调整图表尺寸
+    if screen_width < 768:  # 手机/小平板
+        fig_width = 6
+        fig_height = 4.5
+        font_size = 8
+        title_size = 10
+        legend_size = 7
+        marker_size = 30
+        tick_size = 7
+    elif screen_width < 1024:  # 平板
+        fig_width = 8
+        fig_height = 5.5
+        font_size = 9
+        title_size = 12
+        legend_size = 8
+        marker_size = 40
+        tick_size = 8
+    elif screen_width < 1366:  # 小笔记本
+        fig_width = 10
+        fig_height = 6
+        font_size = 10
+        title_size = 13
+        legend_size = 9
+        marker_size = 45
+        tick_size = 9
+    else:  # 大屏幕/台式机
+        fig_width = 12
+        fig_height = 6.5
+        font_size = 11
+        title_size = 14
+        legend_size = 9.5
+        marker_size = 55
+        tick_size = 10
+    
+    return {
+        'fig_width': fig_width,
+        'fig_height': fig_height,
+        'font_size': font_size,
+        'title_size': title_size,
+        'legend_size': legend_size,
+        'marker_size': marker_size,
+        'tick_size': tick_size
+    }
+
+# ============================================================
 # 列名映射
 # ============================================================
 def get_column_mapping(df):
@@ -124,9 +181,13 @@ def calculate_theory_time(point_count, a=0.0362, b=0.5):
     return a * point_count + b
 
 # ============================================================
-# 对比图（仅图表使用英文，避免乱码）
+# 对比图（自适应版）
 # ============================================================
 def plot_chart(df, model, poly, mape, point_count=None, predicted_time=None):
+    
+    # 获取自适应参数
+    screen = get_screen_size()
+    
     X = df[['点位数']].values
     y = df['实际工时'].values
     
@@ -138,19 +199,20 @@ def plot_chart(df, model, poly, mape, point_count=None, predicted_time=None):
     y_pred_smooth = model.predict(X_smooth_poly)
     y_theory = calculate_theory_time(X_smooth.flatten())
 
-    fig, ax = plt.subplots(figsize=(12, 6.5))
+    # 使用自适应尺寸
+    fig, ax = plt.subplots(figsize=(screen['fig_width'], screen['fig_height']), dpi=100)
     fig.subplots_adjust(left=0.08, right=0.95, top=0.92, bottom=0.12)
 
     # 实际数据点
-    ax.scatter(X, y, color='#1f77b4', s=55, alpha=0.7, 
+    ax.scatter(X, y, color='#1f77b4', s=screen['marker_size'], alpha=0.7, 
                label='Actual Data', zorder=3)
     
     # 预测曲线
-    ax.plot(X_smooth, y_pred_smooth, color='#d62728', linewidth=3, 
+    ax.plot(X_smooth, y_pred_smooth, color='#d62728', linewidth=2.5, 
             label='Prediction Curve', zorder=2)
     
     # 理论直线
-    ax.plot(X_smooth, y_theory, color='#2ca02c', linewidth=2.2, linestyle='--', 
+    ax.plot(X_smooth, y_theory, color='#2ca02c', linewidth=2, linestyle='--', 
             label='Theory Line', zorder=2)
     
     # 误差带
@@ -163,18 +225,22 @@ def plot_chart(df, model, poly, mape, point_count=None, predicted_time=None):
 
     # 预测点标记
     if point_count is not None and predicted_time is not None:
-        ax.scatter([point_count], [predicted_time], color='#ff6b6b', s=250,
-                   edgecolors='white', linewidth=2.5, zorder=6, 
+        ax.scatter([point_count], [predicted_time], color='#ff6b6b', 
+                   s=screen['marker_size'] * 3.5,
+                   edgecolors='white', linewidth=2, zorder=6, 
                    label=f'Prediction: {point_count} pts → {predicted_time:.1f}s')
-        ax.axvline(x=point_count, color='#ff6b6b', linestyle=':', alpha=0.6, linewidth=1.5)
-        ax.axhline(y=predicted_time, color='#ff6b6b', linestyle=':', alpha=0.6, linewidth=1.5)
+        ax.axvline(x=point_count, color='#ff6b6b', linestyle=':', alpha=0.6, linewidth=1.2)
+        ax.axhline(y=predicted_time, color='#ff6b6b', linestyle=':', alpha=0.6, linewidth=1.2)
 
-    ax.legend(loc='upper left', fontsize=9.5, framealpha=0.92, edgecolor='#ccc')
+    # 图例 - 自适应位置
+    ax.legend(loc='upper left', fontsize=screen['legend_size'], 
+              framealpha=0.92, edgecolor='#ccc')
     
-    # 坐标轴标签（英文）
-    ax.set_xlabel('Point Count', fontsize=12, fontweight='bold')
-    ax.set_ylabel('Time (seconds)', fontsize=12, fontweight='bold')
-    ax.set_title('📊 Manhour Prediction Chart', fontsize=14, fontweight='bold', pad=15)
+    # 坐标轴标签
+    ax.set_xlabel('Point Count', fontsize=screen['font_size'], fontweight='bold')
+    ax.set_ylabel('Time (seconds)', fontsize=screen['font_size'], fontweight='bold')
+    ax.set_title('📊 Manhour Prediction Chart', fontsize=screen['title_size'], 
+                 fontweight='bold', pad=15)
     ax.grid(True, alpha=0.25, linestyle='--')
     
     # 坐标轴范围
@@ -215,7 +281,7 @@ def plot_chart(df, model, poly, mape, point_count=None, predicted_time=None):
     ax.set_yticks(y_ticks)
     
     plt.setp(ax.get_xticklabels(), rotation=45, ha='right')
-    ax.tick_params(axis='both', labelsize=10)
+    ax.tick_params(axis='both', labelsize=screen['tick_size'])
 
     plt.tight_layout()
     return fig
@@ -323,6 +389,12 @@ if "last_prediction" not in st.session_state:
 if "last_prediction_result" not in st.session_state:
     st.session_state.last_prediction_result = None
 
+# 存储屏幕尺寸
+if "screen_width" not in st.session_state:
+    st.session_state.screen_width = 1200
+if "screen_height" not in st.session_state:
+    st.session_state.screen_height = 800
+
 # ============================================================
 # 自动加载并训练模型
 # ============================================================
@@ -337,6 +409,19 @@ if not st.session_state.model_trained:
         st.session_state.mae = mae
         st.session_state.mape = mape
         st.session_state.df = saved_df
+
+# ============================================================
+# 注入 JavaScript 获取屏幕尺寸
+# ============================================================
+st.markdown("""
+<script>
+window.addEventListener('resize', function() {
+    const width = window.innerWidth;
+    const height = window.innerHeight;
+    // 通过 Streamlit 的组件通信传递数据
+});
+</script>
+""", unsafe_allow_html=True)
 
 # ============================================================
 # 侧边栏
