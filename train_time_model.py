@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
 import requests
 import re
 import os
@@ -15,6 +16,58 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # ============================================================
+# 中文字体设置（重要！）
+# ============================================================
+def setup_chinese_font():
+    """设置中文字体，支持 Streamlit Cloud 环境"""
+    try:
+        # 方法1：检查系统字体
+        system_fonts = fm.findSystemFonts()
+        chinese_fonts = []
+        
+        # 常见中文字体列表（按优先级排序）
+        font_candidates = [
+            'WenQuanYi Zen Hei',
+            'WenQuanYi Micro Hei', 
+            'Noto Sans CJK SC',
+            'Noto Sans CJK TC',
+            'SimHei',
+            'Microsoft YaHei',
+            'PingFang SC',
+            'Heiti SC',
+            'STHeiti',
+            'DejaVu Sans'
+        ]
+        
+        # 检查哪些字体可用
+        for font_name in font_candidates:
+            for f in system_fonts:
+                if font_name.lower() in f.lower():
+                    chinese_fonts.append(font_name)
+                    break
+        
+        if chinese_fonts:
+            plt.rcParams['font.sans-serif'] = chinese_fonts
+            plt.rcParams['axes.unicode_minus'] = False
+            print(f"✅ 使用中文字体: {chinese_fonts[0]}")
+            return True
+        else:
+            # 方法2：使用默认字体
+            plt.rcParams['font.sans-serif'] = ['DejaVu Sans']
+            plt.rcParams['axes.unicode_minus'] = False
+            print("⚠️ 未找到中文字体，使用默认字体")
+            return False
+    except Exception as e:
+        print(f"❌ 字体设置失败: {e}")
+        # 降级方案
+        plt.rcParams['font.sans-serif'] = ['DejaVu Sans']
+        plt.rcParams['axes.unicode_minus'] = False
+        return False
+
+# 执行字体设置
+setup_chinese_font()
+
+# ============================================================
 # 页面配置
 # ============================================================
 st.set_page_config(
@@ -22,9 +75,6 @@ st.set_page_config(
     page_icon="⚙️",
     layout="wide"
 )
-
-plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'Arial Unicode MS']
-plt.rcParams['axes.unicode_minus'] = False
 
 # ============================================================
 # 配置
@@ -124,9 +174,14 @@ def calculate_theory_time(point_count, a=0.0362, b=0.5):
     return a * point_count + b
 
 # ============================================================
-# 对比图（优化版）
+# 对比图（完整中文字体支持版）
 # ============================================================
 def plot_chart(df, model, poly, mape, point_count=None, predicted_time=None):
+    """绘制工时预测对比图（支持中文显示）"""
+    
+    # 再次确保字体设置
+    setup_chinese_font()
+    
     X = df[['点位数']].values
     y = df['实际工时'].values
     
@@ -141,19 +196,19 @@ def plot_chart(df, model, poly, mape, point_count=None, predicted_time=None):
     fig, ax = plt.subplots(figsize=(12, 6.5))
     fig.subplots_adjust(left=0.08, right=0.95, top=0.92, bottom=0.12)
 
-    # 实际工时数据散点
+    # 1. 实际工时数据散点
     ax.scatter(X, y, color='#1f77b4', s=55, alpha=0.7, 
                label='实际工时数据', zorder=3)
     
-    # 预测拟合曲线
+    # 2. 预测拟合曲线
     ax.plot(X_smooth, y_pred_smooth, color='#d62728', linewidth=3, 
             label='预测拟合曲线', zorder=2)
     
-    # 理论直线
+    # 3. 理论直线
     ax.plot(X_smooth, y_theory, color='#2ca02c', linewidth=2.2, linestyle='--', 
             label='理论直线', zorder=2)
     
-    # 误差带
+    # 4. 误差带
     mape_val = mape if mape is not None else 17.0
     y_upper = y_pred_smooth * (1 + mape_val / 100)
     y_lower = y_pred_smooth * (1 - mape_val / 100)
@@ -161,7 +216,7 @@ def plot_chart(df, model, poly, mape, point_count=None, predicted_time=None):
                     color='#d62728', alpha=0.12, 
                     label=f'±{mape_val:.1f}% 误差带')
 
-    # 预测点标记
+    # 5. 预测点标记
     if point_count is not None and predicted_time is not None:
         ax.scatter([point_count], [predicted_time], color='#ff6b6b', s=250,
                    edgecolors='white', linewidth=2.5, zorder=6, 
@@ -169,22 +224,24 @@ def plot_chart(df, model, poly, mape, point_count=None, predicted_time=None):
         ax.axvline(x=point_count, color='#ff6b6b', linestyle=':', alpha=0.6, linewidth=1.5)
         ax.axhline(y=predicted_time, color='#ff6b6b', linestyle=':', alpha=0.6, linewidth=1.5)
 
+    # 6. 图例
     ax.legend(loc='upper left', fontsize=9.5, framealpha=0.92, edgecolor='#ccc')
     
+    # 7. 坐标轴标签
     ax.set_xlabel('点位数（个）', fontsize=12, fontweight='bold')
     ax.set_ylabel('工时（秒）', fontsize=12, fontweight='bold')
     ax.set_title('📊 工时预测对比图', fontsize=14, fontweight='bold', pad=15)
     ax.grid(True, alpha=0.25, linestyle='--')
     
-    # ===== 坐标轴范围 =====
+    # 8. 坐标轴范围
     x_max = X.max() * 1.15
     y_max = max(y.max(), y_theory.max(), y_pred_smooth.max()) * 1.2
     
     ax.set_xlim(0, x_max)
     ax.set_ylim(0, y_max)
     
-    # ===== 智能刻度设置 =====
-    # X轴：根据数据范围自动选择步长
+    # 9. 智能刻度设置
+    # X轴步长
     if x_max <= 100:
         x_step = 10
     elif x_max <= 200:
@@ -199,7 +256,7 @@ def plot_chart(df, model, poly, mape, point_count=None, predicted_time=None):
     x_ticks = np.arange(0, x_max + x_step, x_step)
     ax.set_xticks(x_ticks)
     
-    # Y轴：根据数据范围自动选择步长
+    # Y轴步长
     if y_max <= 50:
         y_step = 10
     elif y_max <= 100:
@@ -215,6 +272,7 @@ def plot_chart(df, model, poly, mape, point_count=None, predicted_time=None):
     y_ticks = np.arange(0, y_max_rounded + y_step, y_step)
     ax.set_yticks(y_ticks)
     
+    # 10. 刻度标签旋转
     plt.setp(ax.get_xticklabels(), rotation=45, ha='right')
     ax.tick_params(axis='both', labelsize=10)
 
