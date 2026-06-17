@@ -18,7 +18,7 @@ warnings.filterwarnings('ignore')
 # 页面配置
 # ============================================================
 st.set_page_config(
-    page_title="工时预测系统",
+    page_title="工时预测系统 - SMT/DIP",
     page_icon="⚙️",
     layout="wide"
 )
@@ -29,7 +29,8 @@ plt.rcParams['axes.unicode_minus'] = False
 # ============================================================
 # 配置
 # ============================================================
-DATA_FILE = "saved_data.xlsx"
+DATA_FILE_SMT = "smt_data.xlsx"
+DATA_FILE_DIP = "dip_data.xlsx"
 API_KEY = "sk-fvxkdwbhjcokafftooavzvedrlmmrffotehplsnfnjupogqb"
 BASE_URL = "https://api.siliconflow.cn/v1"
 HISTORY_FILE = "prediction_history.json"
@@ -132,15 +133,23 @@ def load_history():
     return []
 
 # ============================================================
-# 数据保存/加载
+# 数据保存/加载（支持SMT和DIP）
 # ============================================================
-def save_data(df):
-    df.to_excel(DATA_FILE, index=False)
+def get_data_file(line_type):
+    if line_type == "SMT":
+        return DATA_FILE_SMT
+    else:
+        return DATA_FILE_DIP
 
-def load_saved_data():
-    if os.path.exists(DATA_FILE):
+def save_data(df, line_type):
+    data_file = get_data_file(line_type)
+    df.to_excel(data_file, index=False)
+
+def load_saved_data(line_type):
+    data_file = get_data_file(line_type)
+    if os.path.exists(data_file):
         try:
-            df = pd.read_excel(DATA_FILE)
+            df = pd.read_excel(data_file)
             point_col, actual_col, theory_col = get_column_mapping(df)
             if point_col is not None and actual_col is not None:
                 df_clean = df[[point_col, actual_col]].copy()
@@ -154,6 +163,9 @@ def load_saved_data():
 # 训练预测模型
 # ============================================================
 def train_prediction_model(df):
+    if len(df) < 2:
+        return None, None, None, None, None, None, None
+    
     X = df[['点位数']].values
     y = df['实际工时'].values
     
@@ -179,6 +191,9 @@ def detect_outliers_by_std(df, model, poly, threshold_std=3.0):
     基于残差标准差检测异常数据
     threshold_std: 标准差倍数，值越大越宽松
     """
+    if len(df) < 2:
+        return df, pd.DataFrame(), [], {'total_count': len(df), 'outlier_count': 0, 'clean_count': len(df), 'outlier_ratio': 0, 'threshold_std': threshold_std, 'threshold_value': 0, 'std_residual': 0, 'mean_residual': 0}
+    
     X = df[['点位数']].values
     y = df['实际工时'].values
     
@@ -186,20 +201,21 @@ def detect_outliers_by_std(df, model, poly, threshold_std=3.0):
     y_pred = model.predict(X_poly)
     
     residuals = y - y_pred
-    std_residual = np.std(residuals, ddof=1)
+    std_residual = np.std(residuals, ddof=1) if len(residuals) > 1 else 0
     mean_residual = np.mean(residuals)
     
     # 计算阈值
-    threshold = threshold_std * std_residual
+    threshold = threshold_std * std_residual if std_residual > 0 else float('inf')
     
     # 检测异常（残差绝对值超出阈值）
-    outlier_mask = np.abs(residuals) > threshold
+    outlier_mask = np.abs(residuals) > threshold if threshold != float('inf') else np.zeros(len(df), dtype=bool)
     
     outlier_indices = df.index[outlier_mask].tolist()
     outlier_data = df.loc[outlier_mask].copy()
-    outlier_data['残差'] = residuals[outlier_mask]
-    outlier_data['预测值'] = y_pred[outlier_mask]
-    outlier_data['残差百分比'] = (residuals[outlier_mask] / y[outlier_mask] * 100)
+    if len(outlier_data) > 0:
+        outlier_data['残差'] = residuals[outlier_mask]
+        outlier_data['预测值'] = y_pred[outlier_mask]
+        outlier_data['残差百分比'] = (residuals[outlier_mask] / y[outlier_mask] * 100)
     
     # 正常数据
     clean_df = df.loc[~outlier_mask].copy()
@@ -210,7 +226,7 @@ def detect_outliers_by_std(df, model, poly, threshold_std=3.0):
         'clean_count': len(clean_df),
         'outlier_ratio': len(outlier_data) / len(df) * 100 if len(df) > 0 else 0,
         'threshold_std': threshold_std,
-        'threshold_value': threshold,
+        'threshold_value': threshold if threshold != float('inf') else 0,
         'std_residual': std_residual,
         'mean_residual': mean_residual
     }
@@ -226,12 +242,17 @@ def calculate_theory_time(point_count, a=0.0362, b=0.5):
 # ============================================================
 # 对比图（自适应版）
 # ============================================================
-def plot_chart(df, model, poly, mape, point_count=None, predicted_time=None, outlier_df=None):
+def plot_chart(df, model, poly, mape, point_count=None, predicted_time=None, outlier_df=None, line_type="SMT"):
     
     screen = get_screen_size()
     
     X = df[['点位数']].values
     y = df['实际工时'].values
+    
+    if len(X) == 0:
+        fig, ax = plt.subplots(figsize=(screen['fig_width'], screen['fig_height']), dpi=100)
+        ax.text(0.5, 0.5, '暂无数据', ha='center', va='center', fontsize=20)
+        return fig
     
     x_min_plot = max(0, X.min() - 50)
     x_max_plot = X.max() + 50
@@ -286,8 +307,8 @@ def plot_chart(df, model, poly, mape, point_count=None, predicted_time=None, out
     ax.set_xlabel('Point Count', fontsize=screen['font_size'], fontweight='bold')
     ax.set_ylabel('Time (seconds)', fontsize=screen['font_size'], fontweight='bold')
     
-    # 标题
-    title = '📊 Manhour Prediction Chart'
+    # 标题 - 显示产线类型
+    title = f'📊 {line_type} Manhour Prediction Chart'
     if outlier_df is not None and len(outlier_df) > 0:
         title += f' (Auto-cleaned: {len(outlier_df)} outliers removed)'
     ax.set_title(title, fontsize=screen['title_size'], fontweight='bold', pad=15)
@@ -340,27 +361,28 @@ def plot_chart(df, model, poly, mape, point_count=None, predicted_time=None, out
 # ============================================================
 # 预测函数
 # ============================================================
-def predict_time(point_count):
-    if st.session_state.model_trained and st.session_state.model is not None:
+def predict_time(point_count, line_type):
+    state_key = f"model_trained_{line_type}"
+    if st.session_state.get(state_key, False) and st.session_state.get(f"model_{line_type}") is not None:
         X_input = np.array([[point_count]])
-        X_input_poly = st.session_state.poly.transform(X_input)
-        predicted = st.session_state.model.predict(X_input_poly)[0]
+        X_input_poly = st.session_state.get(f"poly_{line_type}").transform(X_input)
+        predicted = st.session_state.get(f"model_{line_type}").predict(X_input_poly)[0]
         theory = calculate_theory_time(point_count)
         deviation_pct = (predicted - theory) / theory * 100
         return {
             "predicted": predicted,
             "theory": theory,
             "deviation_pct": deviation_pct,
-            "mape": st.session_state.mape if st.session_state.mape is not None else 17.0,
-            "r2": st.session_state.r2,
-            "mae": st.session_state.mae
+            "mape": st.session_state.get(f"mape_{line_type}", 17.0),
+            "r2": st.session_state.get(f"r2_{line_type}"),
+            "mae": st.session_state.get(f"mae_{line_type}")
         }
     return None
 
 # ============================================================
 # AI对话
 # ============================================================
-def chat_with_ai(user_message, prediction_result=None):
+def chat_with_ai(user_message, prediction_result=None, line_type="SMT"):
     headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
 
     if prediction_result:
@@ -375,9 +397,9 @@ def chat_with_ai(user_message, prediction_result=None):
         else:
             status = "超出正常范围"
 
-        system_prompt = f"""你是SMT/DIP产线工时预测数据分析专家，有丰富的产线经验。
+        system_prompt = f"""你是{line_type}产线工时预测数据分析专家，有丰富的产线经验。
 
-用户输入了点位数 {point_count}，模型预测工时 {p:.2f} 秒。
+用户输入点位数 {point_count}，模型预测工时 {p:.2f} 秒。
 理论标准工时 {theory:.2f} 秒，偏差 {dev:+.1f}%，{status}（正常误差范围 ±{mape_val:.1f}%）。
 
 请严格按以下格式输出：
@@ -388,7 +410,7 @@ def chat_with_ai(user_message, prediction_result=None):
 
         user_message = f"用户输入点位数{point_count}，请分析预测结果。"
     else:
-        system_prompt = "你是SMT/DIP产线工时预测数据分析专家。请提示用户输入具体点位数，以便进行预测分析。"
+        system_prompt = f"你是{line_type}产线工时预测数据分析专家。请提示用户输入具体点位数，以便进行预测分析。"
 
     messages = [{"role": "system", "content": system_prompt}]
     for msg in st.session_state.messages[-10:]:
@@ -423,19 +445,22 @@ if "prediction_history" not in st.session_state:
     loaded_history = load_history()
     st.session_state.prediction_history = loaded_history if loaded_history else []
 
-if "model_trained" not in st.session_state:
-    st.session_state.model_trained = False
-    st.session_state.model = None
-    st.session_state.poly = None
-    st.session_state.mape = None
-    st.session_state.df = None
-    st.session_state.r2 = None
-    st.session_state.mae = None
-    st.session_state.residuals = None
-    st.session_state.outlier_df = None
-    st.session_state.clean_stats = None
-    st.session_state.raw_df = None
-    
+# 为SMT和DIP分别初始化状态
+for line_type in ["SMT", "DIP"]:
+    if f"model_trained_{line_type}" not in st.session_state:
+        st.session_state[f"model_trained_{line_type}"] = False
+        st.session_state[f"model_{line_type}"] = None
+        st.session_state[f"poly_{line_type}"] = None
+        st.session_state[f"mape_{line_type}"] = None
+        st.session_state[f"df_{line_type}"] = None
+        st.session_state[f"r2_{line_type}"] = None
+        st.session_state[f"mae_{line_type}"] = None
+        st.session_state[f"residuals_{line_type}"] = None
+        st.session_state[f"outlier_df_{line_type}"] = None
+        st.session_state[f"clean_stats_{line_type}"] = None
+        st.session_state[f"raw_df_{line_type}"] = None
+        st.session_state[f"outlier_threshold_{line_type}"] = 3.0
+
 if "upload_authorized" not in st.session_state:
     st.session_state.upload_authorized = False
 
@@ -443,57 +468,85 @@ if "last_prediction" not in st.session_state:
     st.session_state.last_prediction = None
 if "last_prediction_result" not in st.session_state:
     st.session_state.last_prediction_result = None
-
-# 异常剔除阈值（默认3.0倍标准差）
-if "outlier_threshold" not in st.session_state:
-    st.session_state.outlier_threshold = 3.0
+if "current_line_type" not in st.session_state:
+    st.session_state.current_line_type = "SMT"
 
 if "screen_width" not in st.session_state:
     st.session_state.screen_width = 1200
 
 # ============================================================
-# 自动加载数据
+# 加载数据函数
 # ============================================================
-if not st.session_state.model_trained:
-    saved_df = load_saved_data()
+def load_data_for_line(line_type):
+    saved_df = load_saved_data(line_type)
     if saved_df is not None and len(saved_df) > 0:
-        st.session_state.raw_df = saved_df.copy()
+        st.session_state[f"raw_df_{line_type}"] = saved_df.copy()
         
         # 先用所有数据训练一次，获取残差
         temp_model, temp_poly, temp_r2, temp_mae, temp_mape, temp_residuals, temp_y_pred = train_prediction_model(saved_df)
         
-        # 检测异常（使用当前阈值）
-        clean_df, outlier_df, outlier_indices, stats = detect_outliers_by_std(
-            saved_df, temp_model, temp_poly, st.session_state.outlier_threshold
-        )
-        
-        st.session_state.outlier_df = outlier_df
-        st.session_state.clean_stats = stats
-        
-        # 用清理后的数据训练最终模型
-        df_to_use = clean_df if len(clean_df) > 0 else saved_df
-        model, poly, r2, mae, mape, residuals, y_pred = train_prediction_model(df_to_use)
-        
-        st.session_state.model_trained = True
-        st.session_state.model = model
-        st.session_state.poly = poly
-        st.session_state.r2 = r2
-        st.session_state.mae = mae
-        st.session_state.mape = mape
-        st.session_state.df = df_to_use
-        st.session_state.residuals = residuals
+        if temp_model is not None:
+            # 检测异常（使用当前阈值）
+            threshold = st.session_state.get(f"outlier_threshold_{line_type}", 3.0)
+            clean_df, outlier_df, outlier_indices, stats = detect_outliers_by_std(
+                saved_df, temp_model, temp_poly, threshold
+            )
+            
+            st.session_state[f"outlier_df_{line_type}"] = outlier_df
+            st.session_state[f"clean_stats_{line_type}"] = stats
+            
+            # 用清理后的数据训练最终模型
+            df_to_use = clean_df if len(clean_df) > 0 else saved_df
+            model, poly, r2, mae, mape, residuals, y_pred = train_prediction_model(df_to_use)
+            
+            if model is not None:
+                st.session_state[f"model_trained_{line_type}"] = True
+                st.session_state[f"model_{line_type}"] = model
+                st.session_state[f"poly_{line_type}"] = poly
+                st.session_state[f"r2_{line_type}"] = r2
+                st.session_state[f"mae_{line_type}"] = mae
+                st.session_state[f"mape_{line_type}"] = mape
+                st.session_state[f"df_{line_type}"] = df_to_use
+                st.session_state[f"residuals_{line_type}"] = residuals
+                return True
+    return False
+
+# 自动加载SMT和DIP数据
+for line_type in ["SMT", "DIP"]:
+    if not st.session_state.get(f"model_trained_{line_type}", False):
+        load_data_for_line(line_type)
 
 # ============================================================
 # 侧边栏
 # ============================================================
 with st.sidebar:
+    # 产线选择
+    st.markdown("### 🏭 产线选择")
+    line_type = st.radio(
+        "选择产线",
+        ["SMT", "DIP"],
+        index=0 if st.session_state.current_line_type == "SMT" else 1,
+        horizontal=True,
+        help="选择要查看和预测的产线"
+    )
+    
+    if line_type != st.session_state.current_line_type:
+        st.session_state.current_line_type = line_type
+        st.rerun()
+    
+    st.markdown("---")
+    
     st.markdown("### ⚙️ 数据管理")
-    if st.session_state.model_trained and st.session_state.df is not None:
-        st.success(f"✅ 当前数据：{len(st.session_state.df)} 行")
-        if st.session_state.clean_stats is not None and st.session_state.clean_stats['outlier_count'] > 0:
-            st.info(f"🧹 已剔除 {st.session_state.clean_stats['outlier_count']} 个异常数据")
+    is_trained = st.session_state.get(f"model_trained_{line_type}", False)
+    df = st.session_state.get(f"df_{line_type}")
+    
+    if is_trained and df is not None:
+        st.success(f"✅ 当前数据：{len(df)} 行 ({line_type})")
+        stats = st.session_state.get(f"clean_stats_{line_type}")
+        if stats is not None and stats['outlier_count'] > 0:
+            st.info(f"🧹 已剔除 {stats['outlier_count']} 个异常数据")
     else:
-        st.warning("⚠️ 暂无数据")
+        st.warning(f"⚠️ 暂无{line_type}数据")
 
     st.markdown("---")
     
@@ -503,13 +556,16 @@ with st.sidebar:
     st.markdown("#### 🎯 异常剔除阈值")
     st.caption("数值越大，剔除越少（越宽松）")
     
+    current_threshold = st.session_state.get(f"outlier_threshold_{line_type}", 3.0)
+    
     # 滑块：0~5，步长0.1，默认3.0
     threshold_value = st.slider(
         "标准差倍数",
         min_value=0.0,
         max_value=5.0,
-        value=st.session_state.outlier_threshold,
+        value=current_threshold,
         step=0.1,
+        key=f"threshold_slider_{line_type}",
         help="0=不剔除，数值越大剔除越少"
     )
     
@@ -524,14 +580,14 @@ with st.sidebar:
         st.success("✅ 当前：宽松模式（剔除较少）")
     
     # 如果阈值改变，重新训练
-    if threshold_value != st.session_state.outlier_threshold:
-        st.session_state.outlier_threshold = threshold_value
-        st.session_state.model_trained = False
+    if threshold_value != current_threshold:
+        st.session_state[f"outlier_threshold_{line_type}"] = threshold_value
+        st.session_state[f"model_trained_{line_type}"] = False
         st.rerun()
     
     # 显示异常统计
-    if st.session_state.clean_stats is not None:
-        stats = st.session_state.clean_stats
+    stats = st.session_state.get(f"clean_stats_{line_type}")
+    if stats is not None:
         col1, col2 = st.columns(2)
         with col1:
             st.metric("异常数量", stats['outlier_count'])
@@ -542,16 +598,17 @@ with st.sidebar:
         st.caption(f"残差标准差：±{stats['std_residual']:.2f} 秒")
     
     # 查看异常数据详情
-    if st.session_state.outlier_df is not None and len(st.session_state.outlier_df) > 0:
-        with st.expander(f"📋 查看异常数据 ({len(st.session_state.outlier_df)}个)"):
-            display_df = st.session_state.outlier_df[['点位数', '实际工时', '预测值', '残差', '残差百分比']].copy()
+    outlier_df = st.session_state.get(f"outlier_df_{line_type}")
+    if outlier_df is not None and len(outlier_df) > 0:
+        with st.expander(f"📋 查看异常数据 ({len(outlier_df)}个)"):
+            display_df = outlier_df[['点位数', '实际工时', '预测值', '残差', '残差百分比']].copy()
             display_df['残差百分比'] = display_df['残差百分比'].round(2)
             st.dataframe(display_df, use_container_width=True)
     
     # 重置按钮
     if st.button("🔄 重置为默认 (3.0倍标准差)", use_container_width=True):
-        st.session_state.outlier_threshold = 3.0
-        st.session_state.model_trained = False
+        st.session_state[f"outlier_threshold_{line_type}"] = 3.0
+        st.session_state[f"model_trained_{line_type}"] = False
         st.rerun()
 
     st.markdown("---")
@@ -567,7 +624,7 @@ with st.sidebar:
 
     if st.session_state.upload_authorized:
         st.markdown("---")
-        st.markdown("#### 📤 上传数据")
+        st.markdown(f"#### 📤 上传{line_type}数据")
         st.caption("支持包含多列的Excel文件，自动识别'单板点数'和'实际工时/s'列")
         uploaded_file = st.file_uploader("选择Excel文件", type=["xlsx", "xls"], label_visibility="collapsed")
         if uploaded_file:
@@ -580,10 +637,10 @@ with st.sidebar:
                 df.columns = ['点位数', '实际工时']
                 df = df.dropna()
                 
-                st.session_state.model_trained = False
-                save_data(df)
+                st.session_state[f"model_trained_{line_type}"] = False
+                save_data(df, line_type)
                 
-                st.success(f"✅ 数据已上传，共 {len(df)} 行")
+                st.success(f"✅ {line_type}数据已上传，共 {len(df)} 行")
                 st.info(f"识别到列：'{point_col}' → 点位数，'{actual_col}' → 实际工时")
                 st.balloons()
                 st.rerun()
@@ -600,16 +657,18 @@ with st.sidebar:
         """)
         st.caption("系统会自动识别'单板点数'和'实际工时/s'列")
 
-    if os.path.exists(DATA_FILE):
-        mod_time = os.path.getmtime(DATA_FILE)
+    # 显示数据更新时间
+    data_file = get_data_file(line_type)
+    if os.path.exists(data_file):
+        mod_time = os.path.getmtime(data_file)
         update_time = datetime.fromtimestamp(mod_time).strftime("%Y-%m-%d %H:%M")
         st.markdown("---")
-        st.caption(f"📅 数据更新：{update_time}")
+        st.caption(f"📅 {line_type}数据更新：{update_time}")
 
 # ============================================================
 # 标题
 # ============================================================
-st.markdown("<h1 style='text-align: center;'>⚙️ 工时预测系统</h1>", unsafe_allow_html=True)
+st.markdown(f"<h1 style='text-align: center;'>⚙️ {st.session_state.current_line_type} 工时预测系统</h1>", unsafe_allow_html=True)
 st.markdown("<hr style='margin: 0.5rem 0;'>", unsafe_allow_html=True)
 
 # ============================================================
@@ -621,65 +680,75 @@ left_col, right_col = st.columns(2, gap="large")
 # 左侧：模型评估 + 对比图
 # ============================================================
 with left_col:
-    if st.session_state.model_trained and st.session_state.df is not None:
+    is_trained = st.session_state.get(f"model_trained_{line_type}", False)
+    df = st.session_state.get(f"df_{line_type}")
+    
+    if is_trained and df is not None:
         with st.container():
             st.markdown("### 📊 模型评估")
             
             # 显示清理信息
-            if st.session_state.clean_stats is not None:
-                stats = st.session_state.clean_stats
+            stats = st.session_state.get(f"clean_stats_{line_type}")
+            if stats is not None:
                 if stats['outlier_count'] > 0:
-                    st.info(f"🧹 已剔除 {stats['outlier_count']} 个异常数据，使用 {len(st.session_state.df)} 条干净数据训练")
+                    st.info(f"🧹 已剔除 {stats['outlier_count']} 个异常数据，使用 {len(df)} 条干净数据训练")
                 else:
                     st.success("✅ 数据质量良好，无异常数据")
             
             col1, col2, col3 = st.columns(3)
             with col1:
-                st.metric("R²", f"{st.session_state.r2:.3f}" if st.session_state.r2 is not None else "--")
+                r2_val = st.session_state.get(f"r2_{line_type}")
+                st.metric("R²", f"{r2_val:.3f}" if r2_val is not None else "--")
             with col2:
-                mae_value = f"{st.session_state.mae:.2f}" if st.session_state.mae is not None else "--"
-                st.metric("MAE", mae_value, help="平均绝对误差（秒）")
+                mae_val = st.session_state.get(f"mae_{line_type}")
+                st.metric("MAE", f"{mae_val:.2f}" if mae_val is not None else "--", help="平均绝对误差（秒）")
             with col3:
-                mape_value = f"{st.session_state.mape:.1f}%" if st.session_state.mape is not None else "--"
-                st.metric("MAPE", mape_value, help="平均绝对百分比误差")
+                mape_val = st.session_state.get(f"mape_{line_type}")
+                st.metric("MAPE", f"{mape_val:.1f}%" if mape_val is not None else "--", help="平均绝对百分比误差")
 
         with st.container():
             st.markdown("### 📈 对比图")
             
             plot_placeholder = st.empty()
             
-            outlier_df = st.session_state.outlier_df if hasattr(st.session_state, 'outlier_df') else None
+            outlier_df = st.session_state.get(f"outlier_df_{line_type}")
+            model = st.session_state.get(f"model_{line_type}")
+            poly = st.session_state.get(f"poly_{line_type}")
+            mape = st.session_state.get(f"mape_{line_type}")
             
-            if st.session_state.last_prediction is not None:
-                fig = plot_chart(
-                    st.session_state.df,
-                    st.session_state.model,
-                    st.session_state.poly,
-                    st.session_state.mape,
-                    point_count=st.session_state.last_prediction["point_count"],
-                    predicted_time=st.session_state.last_prediction["predicted"],
-                    outlier_df=outlier_df
-                )
-                plot_placeholder.pyplot(fig, use_container_width=True)
-                plt.close(fig)
-            else:
-                fig = plot_chart(
-                    st.session_state.df, 
-                    st.session_state.model, 
-                    st.session_state.poly, 
-                    st.session_state.mape,
-                    outlier_df=outlier_df
-                )
-                plot_placeholder.pyplot(fig, use_container_width=True)
-                plt.close(fig)
+            if model is not None and poly is not None:
+                if st.session_state.last_prediction is not None:
+                    fig = plot_chart(
+                        df,
+                        model,
+                        poly,
+                        mape,
+                        point_count=st.session_state.last_prediction.get("point_count"),
+                        predicted_time=st.session_state.last_prediction.get("predicted"),
+                        outlier_df=outlier_df,
+                        line_type=line_type
+                    )
+                    plot_placeholder.pyplot(fig, use_container_width=True)
+                    plt.close(fig)
+                else:
+                    fig = plot_chart(
+                        df, 
+                        model, 
+                        poly, 
+                        mape,
+                        outlier_df=outlier_df,
+                        line_type=line_type
+                    )
+                    plot_placeholder.pyplot(fig, use_container_width=True)
+                    plt.close(fig)
     else:
-        st.info("👈 请在左侧菜单上传数据")
+        st.info(f"👈 请在左侧上传{line_type}数据")
 
 # ============================================================
 # 右侧：AI智能体对话
 # ============================================================
 with right_col:
-    st.markdown("### 🎯 工时预测小助手")
+    st.markdown(f"### 🎯 {line_type}工时预测小助手")
     st.caption("输入点位数，AI估算工时 | 基于实际数据训练的预测模型")
 
     chat_container = st.container(height=280)
@@ -715,7 +784,7 @@ with right_col:
                     margin-bottom: 0.5rem;">
             <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap;">
                 <div>
-                    <span style="font-size: 0.8rem; color: #888;">上次预测</span>
+                    <span style="font-size: 0.8rem; color: #888;">上次预测 ({line_type})</span>
                     <div style="font-size: 1.4rem; font-weight: 700; color: #1f77b4;">
                         {point_count}点 → {p:.2f}s
                     </div>
@@ -747,9 +816,9 @@ with right_col:
         numbers = re.findall(r'\d+', user_input)
         prediction_result = None
 
-        if numbers and st.session_state.model_trained:
+        if numbers and st.session_state.get(f"model_trained_{line_type}", False):
             point_count = int(numbers[0])
-            pred_data = predict_time(point_count)
+            pred_data = predict_time(point_count, line_type)
             if pred_data:
                 prediction_result = {
                     "point_count": point_count,
@@ -761,6 +830,7 @@ with right_col:
                     "mae": pred_data["mae"]
                 }
                 st.session_state.prediction_history.append({
+                    "line_type": line_type,
                     "point_count": point_count,
                     "predicted": pred_data["predicted"],
                     "deviation_pct": pred_data["deviation_pct"]
@@ -780,7 +850,7 @@ with right_col:
                 }
 
         with st.spinner("智能体分析中..."):
-            response = chat_with_ai(user_input, prediction_result)
+            response = chat_with_ai(user_input, prediction_result, line_type)
 
         st.session_state.messages.append({"role": "assistant", "content": response})
         st.rerun()
@@ -795,6 +865,7 @@ with right_col:
         with st.expander("📊 预测历史"):
             if st.session_state.prediction_history:
                 for h in st.session_state.prediction_history[-20:]:
-                    st.write(f"- {h['point_count']}点: {h['predicted']:.1f}秒 (偏差{h['deviation_pct']:+.1f}%)")
+                    line = h.get('line_type', 'SMT')
+                    st.write(f"- [{line}] {h['point_count']}点: {h['predicted']:.1f}s (偏差{h['deviation_pct']:+.1f}%)")
             else:
                 st.write("暂无预测记录")
