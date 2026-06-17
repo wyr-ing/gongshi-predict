@@ -88,27 +88,41 @@ def get_screen_size():
     }
 
 # ============================================================
-# 列名映射
+# 列名映射（增强版 - 支持"元件总数"）
 # ============================================================
 def get_column_mapping(df):
     columns = df.columns.tolist()
     
     point_col = None
-    for col in columns:
-        if '单板点数' in col or '点位数' in col or '点数' in col:
-            point_col = col
+    # 优先匹配的关键词列表（按优先级排序）
+    point_keywords = ['单板点数', '点位数', '元件总数', '点数', '元件数', '总点数']
+    
+    for keyword in point_keywords:
+        for col in columns:
+            if keyword in col:
+                point_col = col
+                break
+        if point_col is not None:
             break
     
     actual_col = None
-    for col in columns:
-        if '实际工时/s' in col or '实际工时' in col:
-            actual_col = col
+    actual_keywords = ['实际工时/s', '实际工时', '实际时间', '工时']
+    for keyword in actual_keywords:
+        for col in columns:
+            if keyword in col:
+                actual_col = col
+                break
+        if actual_col is not None:
             break
     
     theory_col = None
-    for col in columns:
-        if '理论工时/s' in col or '理论工时' in col:
-            theory_col = col
+    theory_keywords = ['理论工时/s', '理论工时', '标准工时', '理论时间']
+    for keyword in theory_keywords:
+        for col in columns:
+            if keyword in col:
+                theory_col = col
+                break
+        if theory_col is not None:
             break
     
     return point_col, actual_col, theory_col
@@ -154,9 +168,14 @@ def load_saved_data(line_type):
             if point_col is not None and actual_col is not None:
                 df_clean = df[[point_col, actual_col]].copy()
                 df_clean.columns = ['点位数', '实际工时']
+                # 移除空值
+                df_clean = df_clean.dropna()
+                # 移除点位数为0或负数的行
+                df_clean = df_clean[df_clean['点位数'] > 0]
                 return df_clean
-        except:
-            pass
+        except Exception as e:
+            print(f"加载{line_type}数据失败: {e}")
+            return None
     return None
 
 # ============================================================
@@ -625,7 +644,7 @@ with st.sidebar:
     if st.session_state.upload_authorized:
         st.markdown("---")
         st.markdown(f"#### 📤 上传{line_type}数据")
-        st.caption("支持包含多列的Excel文件，自动识别'单板点数'和'实际工时/s'列")
+        st.caption("支持包含多列的Excel文件，自动识别'单板点数'、'元件总数'或'实际工时/s'列")
         uploaded_file = st.file_uploader("选择Excel文件", type=["xlsx", "xls"], label_visibility="collapsed")
         if uploaded_file:
             df_raw = pd.read_excel(uploaded_file)
@@ -636,26 +655,31 @@ with st.sidebar:
                 df = df_raw[[point_col, actual_col]].copy()
                 df.columns = ['点位数', '实际工时']
                 df = df.dropna()
+                # 移除点位数<=0的行
+                df = df[df['点位数'] > 0]
                 
-                st.session_state[f"model_trained_{line_type}"] = False
-                save_data(df, line_type)
-                
-                st.success(f"✅ {line_type}数据已上传，共 {len(df)} 行")
-                st.info(f"识别到列：'{point_col}' → 点位数，'{actual_col}' → 实际工时")
-                st.balloons()
-                st.rerun()
+                if len(df) > 0:
+                    st.session_state[f"model_trained_{line_type}"] = False
+                    save_data(df, line_type)
+                    
+                    st.success(f"✅ {line_type}数据已上传，共 {len(df)} 行")
+                    st.info(f"识别到列：'{point_col}' → 点位数，'{actual_col}' → 实际工时")
+                    st.balloons()
+                    st.rerun()
+                else:
+                    st.error("❌ 数据为空或点位数都小于等于0")
             else:
-                st.error(f"❌ 未找到'单板点数'或'实际工时/s'列，当前列名：{df_raw.columns.tolist()}")
+                st.error(f"❌ 未找到'单板点数'/'元件总数'或'实际工时/s'列，当前列名：{df_raw.columns.tolist()}")
 
     st.markdown("---")
     with st.expander("📋 示例数据格式"):
         st.markdown("""
-        | 线别 | 单板点数 | 实际工时/s | 理论工时/s |
+        | 线别 | 单板点数/元件总数 | 实际工时/s | 理论工时/s |
         |------|---------|-----------|-----------|
         | L1 | 71 | 10.22 | 9.67 |
         | L2 | 68 | 57.60 | 68.40 |
         """)
-        st.caption("系统会自动识别'单板点数'和'实际工时/s'列")
+        st.caption("系统会自动识别'单板点数'、'元件总数'和'实际工时/s'列")
 
     # 显示数据更新时间
     data_file = get_data_file(line_type)
