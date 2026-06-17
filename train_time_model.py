@@ -89,7 +89,7 @@ def load_saved_data():
     if os.path.exists(DATA_FILE):
         try:
             df = pd.read_excel(DATA_FILE)
-            point_col, actual_col, _ = get_column_mapping(df)
+            point_col, actual_col, theory_col = get_column_mapping(df)
             if point_col is not None and actual_col is not None:
                 df_clean = df[[point_col, actual_col]].copy()
                 df_clean.columns = ['点位数', '实际工时']
@@ -99,81 +99,198 @@ def load_saved_data():
     return None
 
 # ============================================================
-# 训练模型
+# 训练预测模型
 # ============================================================
-def train_model(df):
+def train_prediction_model(df):
+    """
+    基于实际工时数据训练预测模型
+    返回：模型、多项式特征转换器、评估指标
+    """
     X = df[['点位数']].values
     y = df['实际工时'].values
+    
+    # 使用二次多项式拟合
     poly = PolynomialFeatures(degree=2)
     X_poly = poly.fit_transform(X)
     model = LinearRegression()
     model.fit(X_poly, y)
     y_pred = model.predict(X_poly)
+    
+    # 评估指标
     r2 = r2_score(y, y_pred)
     mae = mean_absolute_error(y, y_pred)
     mape = np.mean(np.abs((y - y_pred) / y)) * 100
+    
+    # 计算残差用于异常检测
     residuals = y - y_pred
+    
     return model, poly, r2, mae, mape, residuals
 
 # ============================================================
-# 对比图
+# 理论工时计算
 # ============================================================
-def plot_chart(df, model, poly, mape, point_count=None, predicted_time=None):
+def calculate_theory_time(point_count, a=0.0362, b=0.5):
+    """计算理论工时：y = a * x + b"""
+    return a * point_count + b
+
+# ============================================================
+# 异常值检测（使用 IQR 方法）
+# ============================================================
+def detect_outliers(df, model, poly, threshold=1.5):
+    """
+    检测异常值（基于预测残差）
+    """
     X = df[['点位数']].values
     y = df['实际工时'].values
-    X_smooth = np.linspace(X.min() - 50, X.max() + 50, 300).reshape(-1, 1)
+    
+    # 计算预测值
+    X_poly = poly.transform(X)
+    y_pred = model.predict(X_poly)
+    
+    # 计算残差（实际值 - 预测值）
+    residuals = y - y_pred
+    
+    # 使用 IQR 方法检测异常
+    Q1 = np.percentile(residuals, 25)
+    Q3 = np.percentile(residuals, 75)
+    IQR = Q3 - Q1
+    
+    lower_bound = Q1 - threshold * IQR
+    upper_bound = Q3 + threshold * IQR
+    
+    outlier_mask = (residuals < lower_bound) | (residuals > upper_bound)
+    
+    outlier_indices = df.index[outlier_mask].tolist()
+    outlier_data = df.loc[outlier_mask].copy()
+    outlier_data['残差'] = residuals[outlier_mask]
+    outlier_data['预测值'] = y_pred[outlier_mask]
+    outlier_data['残差百分比'] = (residuals[outlier_mask] / y[outlier_mask] * 100)
+    
+    return outlier_indices, outlier_data, lower_bound, upper_bound
+
+# ============================================================
+# 对比图（核心图表）
+# ============================================================
+def plot_chart(df, model, poly, mape, point_count=None, predicted_time=None, outliers_df=None,
+               x_max=None, y_max=None, x_tick_step=None, y_tick_step=None):
+    """
+    绘制工时预测对比图
+    - 实际工时数据：散点（蓝色）
+    - 预测拟合曲线：实线（红色）- 基于实际数据训练的模型
+    - 理论直线：虚线（绿色）- 理论公式
+    - 误差带：半透明区域
+    - 预测点：红色星标
+    """
+    X = df[['点位数']].values
+    y = df['实际工时'].values
+    
+    # 生成平滑曲线用于显示拟合和理论线
+    x_min_plot = max(0, X.min() - 50)
+    x_max_plot = X.max() + 50
+    X_smooth = np.linspace(x_min_plot, x_max_plot, 300).reshape(-1, 1)
+    
+    # 预测拟合曲线（基于实际数据训练的模型）
     X_smooth_poly = poly.transform(X_smooth)
-    y_smooth = model.predict(X_smooth_poly)
-    theory_a, theory_b = 0.0362, 0.5
-    y_theory = theory_a * X_smooth.flatten() + theory_b
+    y_pred_smooth = model.predict(X_smooth_poly)
+    
+    # 理论直线（基于理论公式）
+    y_theory = calculate_theory_time(X_smooth.flatten())
 
     fig, ax = plt.subplots(figsize=(12, 6.5))
     fig.subplots_adjust(left=0.08, right=0.95, top=0.92, bottom=0.12)
 
-    # 散点
-    ax.scatter(X, y, color='#1f77b4', s=55, alpha=0.6, label='实际工时数据', zorder=3)
+    # 1. 实际工时数据散点（蓝色）
+    ax.scatter(X, y, color='#1f77b4', s=55, alpha=0.7, 
+               label='实际工时数据（测量值）', zorder=3)
     
-    # 拟合曲线
-    ax.plot(X_smooth, y_smooth, color='#d62728', linewidth=2.8, label='实际拟合曲线', zorder=2)
+    # 2. 异常值高亮（如果有）
+    if outliers_df is not None and len(outliers_df) > 0:
+        ax.scatter(outliers_df['点位数'], outliers_df['实际工时'], 
+                   color='red', s=120, alpha=0.8, 
+                   marker='x', linewidth=2,
+                   label=f'⚠️ 异常数据 ({len(outliers_df)}个)', zorder=5)
     
-    # 理论直线
-    ax.plot(X_smooth, y_theory, color='#2ca02c', linewidth=2.2, linestyle='--', label='理论直线', zorder=2)
+    # 3. 预测拟合曲线（红色实线）- 这是基于实际数据训练出来的
+    ax.plot(X_smooth, y_pred_smooth, color='#d62728', linewidth=3, 
+            label='预测拟合曲线（模型预测）', zorder=2)
     
-    # 误差带
+    # 4. 理论直线（绿色虚线）
+    ax.plot(X_smooth, y_theory, color='#2ca02c', linewidth=2.2, linestyle='--', 
+            label='理论直线（标准公式）', zorder=2)
+    
+    # 5. 误差带（基于MAPE）
     mape_val = mape if mape is not None else 17.0
-    y_upper = y_smooth * (1 + mape_val / 100)
-    y_lower = y_smooth * (1 - mape_val / 100)
-    ax.fill_between(X_smooth.flatten(), y_lower, y_upper, color='#d62728', alpha=0.15, label=f'±{mape_val:.1f}% 误差带')
+    y_upper = y_pred_smooth * (1 + mape_val / 100)
+    y_lower = y_pred_smooth * (1 - mape_val / 100)
+    ax.fill_between(X_smooth.flatten(), y_lower, y_upper, 
+                    color='#d62728', alpha=0.12, 
+                    label=f'±{mape_val:.1f}% 预测误差带')
 
-    # 预测点标记
+    # 6. 当前预测点标记（如果有）
     if point_count is not None and predicted_time is not None:
-        ax.scatter([point_count], [predicted_time], color='red', s=200,
-                   edgecolors='white', linewidth=2, zorder=6, 
-                   label=f'当前预测: {point_count}点 → {predicted_time:.1f}s')
-        ax.axvline(x=point_count, color='red', linestyle=':', alpha=0.6, linewidth=1.2)
-        ax.axhline(y=predicted_time, color='red', linestyle=':', alpha=0.6, linewidth=1.2)
+        ax.scatter([point_count], [predicted_time], color='#ff6b6b', s=250,
+                   edgecolors='white', linewidth=2.5, zorder=6, 
+                   label=f'🔮 当前预测: {point_count}点 → {predicted_time:.1f}s')
+        ax.axvline(x=point_count, color='#ff6b6b', linestyle=':', alpha=0.6, linewidth=1.5)
+        ax.axhline(y=predicted_time, color='#ff6b6b', linestyle=':', alpha=0.6, linewidth=1.5)
 
-    ax.legend(loc='upper left', fontsize=9, framealpha=0.9, edgecolor='gray')
+    # 图例
+    ax.legend(loc='upper left', fontsize=9.5, framealpha=0.92, edgecolor='#ccc')
     
-    ax.set_xlabel('点位数（个）', fontsize=12)
-    ax.set_ylabel('工时（秒）', fontsize=12)
-    ax.set_title('工时预测对比图', fontsize=14, fontweight='bold', pad=15)
-    ax.grid(True, alpha=0.3, linestyle='--')
+    # 坐标轴标签
+    ax.set_xlabel('点位数（个）', fontsize=12, fontweight='bold')
+    ax.set_ylabel('工时（秒）', fontsize=12, fontweight='bold')
+    ax.set_title('📊 工时预测对比图\n（实际数据 → 预测模型 → 理论标准）', 
+                 fontsize=14, fontweight='bold', pad=15)
+    ax.grid(True, alpha=0.25, linestyle='--')
     
-    # 坐标轴范围
+    # ===== 坐标轴范围设置 =====
     x_min = 0
-    x_max = X.max() * 1.1
-    ax.set_xlim(x_min, x_max)
+    if x_max is not None and x_max > 0:
+        x_max_actual = x_max
+    else:
+        x_max_actual = X.max() * 1.15
     
-    y_max = max(y.max(), y_theory.max(), y_smooth.max()) * 1.2
-    ax.set_ylim(0, y_max)
+    ax.set_xlim(x_min, x_max_actual)
     
-    # 刻度设置
-    x_ticks = np.arange(0, x_max + 50, 50)
+    if y_max is not None and y_max > 0:
+        y_max_actual = y_max
+    else:
+        y_max_actual = max(y.max(), y_theory.max(), y_pred_smooth.max()) * 1.2
+    
+    ax.set_ylim(0, y_max_actual)
+    
+    # ===== 刻度间距设置 =====
+    if x_tick_step is not None and x_tick_step > 0:
+        x_tick_step_actual = x_tick_step
+    else:
+        data_range = x_max_actual - x_min
+        if data_range <= 100:
+            x_tick_step_actual = 10
+        elif data_range <= 500:
+            x_tick_step_actual = 50
+        elif data_range <= 1000:
+            x_tick_step_actual = 100
+        else:
+            x_tick_step_actual = 200
+    
+    x_ticks = np.arange(0, x_max_actual + x_tick_step_actual, x_tick_step_actual)
     ax.set_xticks(x_ticks)
     
-    y_max_rounded = int(np.ceil(y_max / 50)) * 50
-    y_ticks = np.arange(0, y_max_rounded + 50, 50)
+    if y_tick_step is not None and y_tick_step > 0:
+        y_tick_step_actual = y_tick_step
+    else:
+        if y_max_actual <= 100:
+            y_tick_step_actual = 10
+        elif y_max_actual <= 500:
+            y_tick_step_actual = 50
+        elif y_max_actual <= 1000:
+            y_tick_step_actual = 100
+        else:
+            y_tick_step_actual = 200
+    
+    y_max_rounded = int(np.ceil(y_max_actual / y_tick_step_actual)) * y_tick_step_actual
+    y_ticks = np.arange(0, y_max_rounded + y_tick_step_actual, y_tick_step_actual)
     ax.set_yticks(y_ticks)
     
     plt.setp(ax.get_xticklabels(), rotation=45, ha='right')
@@ -185,12 +302,13 @@ def plot_chart(df, model, poly, mape, point_count=None, predicted_time=None):
 # ============================================================
 # 预测函数
 # ============================================================
-def predict_by_model(point_count):
+def predict_time(point_count):
+    """使用训练好的模型预测工时"""
     if st.session_state.model_trained and st.session_state.model is not None:
         X_input = np.array([[point_count]])
         X_input_poly = st.session_state.poly.transform(X_input)
         predicted = st.session_state.model.predict(X_input_poly)[0]
-        theory = 0.0362 * point_count + 0.5
+        theory = calculate_theory_time(point_count)
         deviation_pct = (predicted - theory) / theory * 100
         return {
             "predicted": predicted,
@@ -286,13 +404,30 @@ if "last_prediction" not in st.session_state:
 if "last_prediction_result" not in st.session_state:
     st.session_state.last_prediction_result = None
 
+if "outliers_removed" not in st.session_state:
+    st.session_state.outliers_removed = False
+
 # ============================================================
-# 自动加载并训练数据
+# 图表设置默认值
+# ============================================================
+if "chart_x_max" not in st.session_state:
+    st.session_state.chart_x_max = None
+if "chart_y_max" not in st.session_state:
+    st.session_state.chart_y_max = None
+if "chart_x_tick" not in st.session_state:
+    st.session_state.chart_x_tick = None
+if "chart_y_tick" not in st.session_state:
+    st.session_state.chart_y_tick = None
+if "use_custom_axis" not in st.session_state:
+    st.session_state.use_custom_axis = False
+
+# ============================================================
+# 自动加载并训练模型
 # ============================================================
 if not st.session_state.model_trained:
     saved_df = load_saved_data()
     if saved_df is not None and len(saved_df) > 0:
-        model, poly, r2, mae, mape, residuals = train_model(saved_df)
+        model, poly, r2, mae, mape, residuals = train_prediction_model(saved_df)
         st.session_state.model_trained = True
         st.session_state.model = model
         st.session_state.poly = poly
@@ -309,6 +444,8 @@ with st.sidebar:
     st.markdown("### ⚙️ 数据管理")
     if st.session_state.model_trained and st.session_state.df is not None:
         st.success(f"✅ 当前数据：{len(st.session_state.df)} 行")
+        if st.session_state.outliers_removed:
+            st.info("🔧 已删除异常数据")
     else:
         st.warning("⚠️ 暂无数据")
 
@@ -331,14 +468,14 @@ with st.sidebar:
         if uploaded_file:
             df_raw = pd.read_excel(uploaded_file)
             
-            point_col, actual_col, _ = get_column_mapping(df_raw)
+            point_col, actual_col, theory_col = get_column_mapping(df_raw)
             
             if point_col is not None and actual_col is not None:
                 df = df_raw[[point_col, actual_col]].copy()
                 df.columns = ['点位数', '实际工时']
                 df = df.dropna()
                 
-                model, poly, r2, mae, mape, residuals = train_model(df)
+                model, poly, r2, mae, mape, residuals = train_prediction_model(df)
                 st.session_state.model_trained = True
                 st.session_state.model = model
                 st.session_state.poly = poly
@@ -347,6 +484,7 @@ with st.sidebar:
                 st.session_state.mape = mape
                 st.session_state.df = df
                 st.session_state.residuals = residuals
+                st.session_state.outliers_removed = False
                 save_data(df)
                 st.success(f"✅ 数据已保存，共 {len(df)} 行")
                 st.info(f"识别到列：'{point_col}' → 点位数，'{actual_col}' → 实际工时")
@@ -354,6 +492,179 @@ with st.sidebar:
                 st.rerun()
             else:
                 st.error(f"❌ 未找到'单板点数'或'实际工时/s'列，当前列名：{df_raw.columns.tolist()}")
+    
+    # ============================================================
+    # 异常数据管理
+    # ============================================================
+    st.markdown("---")
+    st.markdown("#### 🗑️ 异常数据管理")
+    
+    if st.session_state.model_trained and st.session_state.df is not None:
+        if st.button("🔍 检测异常数据", use_container_width=True):
+            with st.spinner("正在检测异常数据..."):
+                outlier_indices, outlier_data, lower_bound, upper_bound = detect_outliers(
+                    st.session_state.df, 
+                    st.session_state.model, 
+                    st.session_state.poly,
+                    threshold=1.5
+                )
+                
+                if len(outlier_data) > 0:
+                    st.session_state._outlier_indices = outlier_indices
+                    st.session_state._outlier_data = outlier_data
+                    st.session_state._outlier_count = len(outlier_data)
+                    st.success(f"✅ 发现 {len(outlier_data)} 个异常数据点")
+                else:
+                    st.success("✅ 未发现异常数据点，数据质量良好！")
+                    st.session_state._outlier_data = None
+        
+        if hasattr(st.session_state, '_outlier_data') and st.session_state._outlier_data is not None:
+            outlier_df = st.session_state._outlier_data
+            st.info(f"发现 {len(outlier_df)} 个异常数据点")
+            
+            with st.expander(f"📋 查看异常数据详情 ({len(outlier_df)}个)"):
+                display_df = outlier_df[['点位数', '实际工时', '预测值', '残差', '残差百分比']].copy()
+                display_df['残差百分比'] = display_df['残差百分比'].round(2)
+                st.dataframe(display_df, use_container_width=True)
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("异常数据数量", len(outlier_df))
+            with col2:
+                st.metric("占总数据比例", f"{len(outlier_df)/len(st.session_state.df)*100:.1f}%")
+            
+            if st.button("🗑️ 删除所有异常数据", type="primary", use_container_width=True):
+                clean_df = st.session_state.df.drop(outlier_df.index).copy()
+                model, poly, r2, mae, mape, residuals = train_prediction_model(clean_df)
+                
+                st.session_state.df = clean_df
+                st.session_state.model = model
+                st.session_state.poly = poly
+                st.session_state.r2 = r2
+                st.session_state.mae = mae
+                st.session_state.mape = mape
+                st.session_state.residuals = residuals
+                st.session_state.outliers_removed = True
+                st.session_state._outlier_data = None
+                
+                save_data(clean_df)
+                
+                st.success(f"✅ 已删除 {len(outlier_df)} 个异常数据，剩余 {len(clean_df)} 条数据")
+                st.balloons()
+                st.rerun()
+        
+        if st.session_state.outliers_removed:
+            if st.button("🔄 恢复原始数据", use_container_width=True):
+                saved_df = load_saved_data()
+                if saved_df is not None and len(saved_df) > 0:
+                    st.warning("⚠️ 恢复功能需要从备份文件恢复，请联系管理员")
+        
+        with st.expander("⚙️ 异常检测阈值设置"):
+            threshold = st.slider(
+                "IQR 倍数阈值",
+                min_value=1.0,
+                max_value=3.0,
+                value=1.5,
+                step=0.1,
+                help="值越小，检测越严格"
+            )
+            if st.button("应用阈值设置"):
+                outlier_indices, outlier_data, lower_bound, upper_bound = detect_outliers(
+                    st.session_state.df, 
+                    st.session_state.model, 
+                    st.session_state.poly,
+                    threshold=threshold
+                )
+                if len(outlier_data) > 0:
+                    st.session_state._outlier_indices = outlier_indices
+                    st.session_state._outlier_data = outlier_data
+                    st.session_state._outlier_count = len(outlier_data)
+                    st.success(f"✅ 使用阈值 {threshold} 检测到 {len(outlier_data)} 个异常数据点")
+                else:
+                    st.success(f"✅ 使用阈值 {threshold} 未发现异常数据点")
+                    st.session_state._outlier_data = None
+
+    # ============================================================
+    # 图表坐标轴设置
+    # ============================================================
+    st.markdown("---")
+    st.markdown("#### 📐 图表坐标轴设置")
+    
+    if st.session_state.model_trained and st.session_state.df is not None:
+        use_custom = st.checkbox("启用自定义坐标轴", value=st.session_state.use_custom_axis)
+        st.session_state.use_custom_axis = use_custom
+        
+        if use_custom:
+            X = st.session_state.df[['点位数']].values
+            y = st.session_state.df['实际工时'].values
+            x_data_max = X.max()
+            y_data_max = y.max()
+            
+            st.caption(f"📊 数据范围：X轴 0~{x_data_max:.0f}，Y轴 0~{y_data_max:.0f}")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("**X轴设置（点位数）**")
+                x_max_input = st.number_input(
+                    "X轴最大值",
+                    min_value=0,
+                    value=int(x_data_max * 1.15) if st.session_state.chart_x_max is None else int(st.session_state.chart_x_max),
+                    step=50,
+                    key="x_max_input"
+                )
+                if x_max_input > 0:
+                    st.session_state.chart_x_max = x_max_input
+                else:
+                    st.session_state.chart_x_max = None
+                
+                x_tick_options = [10, 20, 25, 50, 100, 200, 250, 500]
+                x_tick_default = 50 if x_data_max > 100 else 10
+                if st.session_state.chart_x_tick is not None:
+                    x_tick_default = st.session_state.chart_x_tick
+                x_tick_input = st.selectbox(
+                    "X轴刻度步长",
+                    options=x_tick_options,
+                    index=x_tick_options.index(x_tick_default) if x_tick_default in x_tick_options else 0,
+                    key="x_tick_select"
+                )
+                st.session_state.chart_x_tick = x_tick_input
+            
+            with col2:
+                st.markdown("**Y轴设置（工时）**")
+                y_max_input = st.number_input(
+                    "Y轴最大值",
+                    min_value=0,
+                    value=int(y_data_max * 1.2) if st.session_state.chart_y_max is None else int(st.session_state.chart_y_max),
+                    step=50,
+                    key="y_max_input"
+                )
+                if y_max_input > 0:
+                    st.session_state.chart_y_max = y_max_input
+                else:
+                    st.session_state.chart_y_max = None
+                
+                y_tick_options = [10, 20, 25, 50, 100, 200, 250, 500]
+                y_tick_default = 50 if y_data_max > 100 else 10
+                if st.session_state.chart_y_tick is not None:
+                    y_tick_default = st.session_state.chart_y_tick
+                y_tick_input = st.selectbox(
+                    "Y轴刻度步长",
+                    options=y_tick_options,
+                    index=y_tick_options.index(y_tick_default) if y_tick_default in y_tick_options else 0,
+                    key="y_tick_select"
+                )
+                st.session_state.chart_y_tick = y_tick_input
+            
+            if st.button("🔄 重置为自动", use_container_width=True):
+                st.session_state.chart_x_max = None
+                st.session_state.chart_y_max = None
+                st.session_state.chart_x_tick = None
+                st.session_state.chart_y_tick = None
+                st.session_state.use_custom_axis = False
+                st.rerun()
+        else:
+            st.caption("当前使用自动坐标轴设置")
 
     st.markdown("---")
     with st.expander("📋 示例数据格式"):
@@ -404,6 +715,15 @@ with left_col:
             
             plot_placeholder = st.empty()
             
+            outliers_df = None
+            if hasattr(st.session_state, '_outlier_data') and st.session_state._outlier_data is not None:
+                outliers_df = st.session_state._outlier_data
+            
+            x_max = st.session_state.chart_x_max if st.session_state.use_custom_axis else None
+            y_max = st.session_state.chart_y_max if st.session_state.use_custom_axis else None
+            x_tick = st.session_state.chart_x_tick if st.session_state.use_custom_axis else None
+            y_tick = st.session_state.chart_y_tick if st.session_state.use_custom_axis else None
+            
             if st.session_state.last_prediction is not None:
                 fig = plot_chart(
                     st.session_state.df,
@@ -411,12 +731,27 @@ with left_col:
                     st.session_state.poly,
                     st.session_state.mape,
                     point_count=st.session_state.last_prediction["point_count"],
-                    predicted_time=st.session_state.last_prediction["predicted"]
+                    predicted_time=st.session_state.last_prediction["predicted"],
+                    outliers_df=outliers_df,
+                    x_max=x_max,
+                    y_max=y_max,
+                    x_tick_step=x_tick,
+                    y_tick_step=y_tick
                 )
                 plot_placeholder.pyplot(fig, use_container_width=True)
                 plt.close(fig)
             else:
-                fig = plot_chart(st.session_state.df, st.session_state.model, st.session_state.poly, st.session_state.mape)
+                fig = plot_chart(
+                    st.session_state.df, 
+                    st.session_state.model, 
+                    st.session_state.poly, 
+                    st.session_state.mape,
+                    outliers_df=outliers_df,
+                    x_max=x_max,
+                    y_max=y_max,
+                    x_tick_step=x_tick,
+                    y_tick_step=y_tick
+                )
                 plot_placeholder.pyplot(fig, use_container_width=True)
                 plt.close(fig)
     else:
@@ -427,7 +762,7 @@ with left_col:
 # ============================================================
 with right_col:
     st.markdown("### 🎯 工时预测小助手")
-    st.caption("输入点位数，AI估算工时 | 基于历史数据预测新订单")
+    st.caption("输入点位数，AI估算工时 | 基于实际数据训练的预测模型")
 
     chat_container = st.container(height=280)
 
@@ -496,7 +831,7 @@ with right_col:
 
         if numbers and st.session_state.model_trained:
             point_count = int(numbers[0])
-            pred_data = predict_by_model(point_count)
+            pred_data = predict_time(point_count)
             if pred_data:
                 prediction_result = {
                     "point_count": point_count,
@@ -545,4 +880,3 @@ with right_col:
                     st.write(f"- {h['point_count']}点: {h['predicted']:.1f}秒 (偏差{h['deviation_pct']:+.1f}%)")
             else:
                 st.write("暂无预测记录")
-    subprocess.run(["streamlit", "run", __file__, "--server.port", "8501"])
