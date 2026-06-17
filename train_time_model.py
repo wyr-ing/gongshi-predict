@@ -112,52 +112,13 @@ def train_model(df):
     r2 = r2_score(y, y_pred)
     mae = mean_absolute_error(y, y_pred)
     mape = np.mean(np.abs((y - y_pred) / y)) * 100
-    
-    # 计算残差用于异常检测
     residuals = y - y_pred
     return model, poly, r2, mae, mape, residuals
 
 # ============================================================
-# 异常值检测（使用 IQR 方法）
+# 对比图
 # ============================================================
-def detect_outliers(df, model, poly, threshold=1.5):
-    """
-    检测异常值
-    threshold: IQR倍数，默认1.5（标准），3.0为严格标准
-    """
-    X = df[['点位数']].values
-    y = df['实际工时'].values
-    
-    # 计算预测值
-    X_poly = poly.transform(X)
-    y_pred = model.predict(X_poly)
-    
-    # 计算残差
-    residuals = y - y_pred
-    
-    # 使用 IQR 方法检测异常
-    Q1 = np.percentile(residuals, 25)
-    Q3 = np.percentile(residuals, 75)
-    IQR = Q3 - Q1
-    
-    lower_bound = Q1 - threshold * IQR
-    upper_bound = Q3 + threshold * IQR
-    
-    outlier_mask = (residuals < lower_bound) | (residuals > upper_bound)
-    
-    outlier_indices = df.index[outlier_mask].tolist()
-    outlier_data = df.loc[outlier_mask].copy()
-    outlier_data['残差'] = residuals[outlier_mask]
-    outlier_data['预测值'] = y_pred[outlier_mask]
-    outlier_data['残差百分比'] = (residuals[outlier_mask] / y[outlier_mask] * 100)
-    
-    return outlier_indices, outlier_data, lower_bound, upper_bound
-
-# ============================================================
-# 对比图（带坐标轴设置）
-# ============================================================
-def plot_chart(df, model, poly, mape, point_count=None, predicted_time=None, outliers_df=None, 
-               x_max=None, y_max=None, x_tick_step=None, y_tick_step=None):
+def plot_chart(df, model, poly, mape, point_count=None, predicted_time=None):
     X = df[['点位数']].values
     y = df['实际工时'].values
     X_smooth = np.linspace(X.min() - 50, X.max() + 50, 300).reshape(-1, 1)
@@ -169,15 +130,8 @@ def plot_chart(df, model, poly, mape, point_count=None, predicted_time=None, out
     fig, ax = plt.subplots(figsize=(12, 6.5))
     fig.subplots_adjust(left=0.08, right=0.95, top=0.92, bottom=0.12)
 
-    # 散点（正常数据）
+    # 散点
     ax.scatter(X, y, color='#1f77b4', s=55, alpha=0.6, label='实际工时数据', zorder=3)
-    
-    # 如果有异常值，用红色高亮标记
-    if outliers_df is not None and len(outliers_df) > 0:
-        ax.scatter(outliers_df['点位数'], outliers_df['实际工时'], 
-                   color='red', s=120, alpha=0.8, 
-                   marker='x', linewidth=2,
-                   label=f'异常数据 ({len(outliers_df)}个)', zorder=5)
     
     # 拟合曲线
     ax.plot(X_smooth, y_smooth, color='#d62728', linewidth=2.8, label='实际拟合曲线', zorder=2)
@@ -201,71 +155,28 @@ def plot_chart(df, model, poly, mape, point_count=None, predicted_time=None, out
 
     ax.legend(loc='upper left', fontsize=9, framealpha=0.9, edgecolor='gray')
     
-    # 坐标轴标签
     ax.set_xlabel('点位数（个）', fontsize=12)
     ax.set_ylabel('工时（秒）', fontsize=12)
     ax.set_title('工时预测对比图', fontsize=14, fontweight='bold', pad=15)
     ax.grid(True, alpha=0.3, linestyle='--')
     
-    # ===== 坐标轴范围设置 =====
+    # 坐标轴范围
     x_min = 0
+    x_max = X.max() * 1.1
+    ax.set_xlim(x_min, x_max)
     
-    # X轴最大值
-    if x_max is not None and x_max > 0:
-        x_max_actual = x_max
-    else:
-        x_max_actual = X.max() * 1.1
+    y_max = max(y.max(), y_theory.max(), y_smooth.max()) * 1.2
+    ax.set_ylim(0, y_max)
     
-    ax.set_xlim(x_min, x_max_actual)
-    
-    # Y轴最大值
-    if y_max is not None and y_max > 0:
-        y_max_actual = y_max
-    else:
-        y_max_actual = max(y.max(), y_theory.max(), y_smooth.max()) * 1.2
-    
-    ax.set_ylim(0, y_max_actual)
-    
-    # ===== 刻度间距设置 =====
-    # X轴刻度
-    if x_tick_step is not None and x_tick_step > 0:
-        x_tick_step_actual = x_tick_step
-    else:
-        # 自动计算：根据数据范围选择合适的步长
-        data_range = x_max_actual - x_min
-        if data_range <= 100:
-            x_tick_step_actual = 10
-        elif data_range <= 500:
-            x_tick_step_actual = 50
-        elif data_range <= 1000:
-            x_tick_step_actual = 100
-        else:
-            x_tick_step_actual = 200
-    
-    x_ticks = np.arange(0, x_max_actual + x_tick_step_actual, x_tick_step_actual)
+    # 刻度设置
+    x_ticks = np.arange(0, x_max + 50, 50)
     ax.set_xticks(x_ticks)
     
-    # Y轴刻度
-    if y_tick_step is not None and y_tick_step > 0:
-        y_tick_step_actual = y_tick_step
-    else:
-        # 自动计算：根据数据范围选择合适的步长
-        if y_max_actual <= 100:
-            y_tick_step_actual = 10
-        elif y_max_actual <= 500:
-            y_tick_step_actual = 50
-        elif y_max_actual <= 1000:
-            y_tick_step_actual = 100
-        else:
-            y_tick_step_actual = 200
-    
-    y_max_rounded = int(np.ceil(y_max_actual / y_tick_step_actual)) * y_tick_step_actual
-    y_ticks = np.arange(0, y_max_rounded + y_tick_step_actual, y_tick_step_actual)
+    y_max_rounded = int(np.ceil(y_max / 50)) * 50
+    y_ticks = np.arange(0, y_max_rounded + 50, 50)
     ax.set_yticks(y_ticks)
     
-    # 自动旋转X轴标签避免重叠
     plt.setp(ax.get_xticklabels(), rotation=45, ha='right')
-    
     ax.tick_params(axis='both', labelsize=10)
 
     plt.tight_layout()
@@ -375,23 +286,6 @@ if "last_prediction" not in st.session_state:
 if "last_prediction_result" not in st.session_state:
     st.session_state.last_prediction_result = None
 
-if "outliers_removed" not in st.session_state:
-    st.session_state.outliers_removed = False
-
-# ============================================================
-# 图表设置默认值（存储在session_state中）
-# ============================================================
-if "chart_x_max" not in st.session_state:
-    st.session_state.chart_x_max = None  # None表示自动
-if "chart_y_max" not in st.session_state:
-    st.session_state.chart_y_max = None
-if "chart_x_tick" not in st.session_state:
-    st.session_state.chart_x_tick = None
-if "chart_y_tick" not in st.session_state:
-    st.session_state.chart_y_tick = None
-if "use_custom_axis" not in st.session_state:
-    st.session_state.use_custom_axis = False
-
 # ============================================================
 # 自动加载并训练数据
 # ============================================================
@@ -415,8 +309,6 @@ with st.sidebar:
     st.markdown("### ⚙️ 数据管理")
     if st.session_state.model_trained and st.session_state.df is not None:
         st.success(f"✅ 当前数据：{len(st.session_state.df)} 行")
-        if st.session_state.outliers_removed:
-            st.info("🔧 已删除异常数据")
     else:
         st.warning("⚠️ 暂无数据")
 
@@ -455,7 +347,6 @@ with st.sidebar:
                 st.session_state.mape = mape
                 st.session_state.df = df
                 st.session_state.residuals = residuals
-                st.session_state.outliers_removed = False
                 save_data(df)
                 st.success(f"✅ 数据已保存，共 {len(df)} 行")
                 st.info(f"识别到列：'{point_col}' → 点位数，'{actual_col}' → 实际工时")
@@ -463,205 +354,6 @@ with st.sidebar:
                 st.rerun()
             else:
                 st.error(f"❌ 未找到'单板点数'或'实际工时/s'列，当前列名：{df_raw.columns.tolist()}")
-    
-    # ============================================================
-    # 异常数据管理区域
-    # ============================================================
-    st.markdown("---")
-    st.markdown("#### 🗑️ 异常数据管理")
-    
-    if st.session_state.model_trained and st.session_state.df is not None:
-        # 检测异常值
-        if st.button("🔍 检测异常数据", use_container_width=True):
-            with st.spinner("正在检测异常数据..."):
-                outlier_indices, outlier_data, lower_bound, upper_bound = detect_outliers(
-                    st.session_state.df, 
-                    st.session_state.model, 
-                    st.session_state.poly,
-                    threshold=1.5
-                )
-                
-                if len(outlier_data) > 0:
-                    st.session_state._outlier_indices = outlier_indices
-                    st.session_state._outlier_data = outlier_data
-                    st.session_state._outlier_count = len(outlier_data)
-                    st.success(f"✅ 发现 {len(outlier_data)} 个异常数据点")
-                else:
-                    st.success("✅ 未发现异常数据点，数据质量良好！")
-                    st.session_state._outlier_data = None
-        
-        # 显示异常数据详情
-        if hasattr(st.session_state, '_outlier_data') and st.session_state._outlier_data is not None:
-            outlier_df = st.session_state._outlier_data
-            st.info(f"发现 {len(outlier_df)} 个异常数据点")
-            
-            # 显示异常数据表格
-            with st.expander(f"📋 查看异常数据详情 ({len(outlier_df)}个)"):
-                display_df = outlier_df[['点位数', '实际工时', '预测值', '残差', '残差百分比']].copy()
-                display_df['残差百分比'] = display_df['残差百分比'].round(2)
-                st.dataframe(display_df, use_container_width=True)
-            
-            # 显示异常数据统计
-            col1, col2 = st.columns(2)
-            with col1:
-                st.metric("异常数据数量", len(outlier_df))
-            with col2:
-                st.metric("占总数据比例", f"{len(outlier_df)/len(st.session_state.df)*100:.1f}%")
-            
-            # 删除异常数据按钮
-            if st.button("🗑️ 删除所有异常数据", type="primary", use_container_width=True):
-                # 从数据集中移除异常数据
-                clean_df = st.session_state.df.drop(outlier_df.index).copy()
-                
-                # 重新训练模型
-                model, poly, r2, mae, mape, residuals = train_model(clean_df)
-                
-                # 更新会话状态
-                st.session_state.df = clean_df
-                st.session_state.model = model
-                st.session_state.poly = poly
-                st.session_state.r2 = r2
-                st.session_state.mae = mae
-                st.session_state.mape = mape
-                st.session_state.residuals = residuals
-                st.session_state.outliers_removed = True
-                st.session_state._outlier_data = None
-                
-                # 保存清理后的数据
-                save_data(clean_df)
-                
-                st.success(f"✅ 已删除 {len(outlier_df)} 个异常数据，剩余 {len(clean_df)} 条数据")
-                st.balloons()
-                st.rerun()
-        
-        # 恢复原始数据按钮
-        if st.session_state.outliers_removed:
-            if st.button("🔄 恢复原始数据", use_container_width=True):
-                saved_df = load_saved_data()
-                if saved_df is not None and len(saved_df) > 0:
-                    st.warning("⚠️ 恢复功能需要从备份文件恢复，请联系管理员")
-        
-        # 异常检测阈值调整
-        with st.expander("⚙️ 异常检测阈值设置"):
-            threshold = st.slider(
-                "IQR 倍数阈值",
-                min_value=1.0,
-                max_value=3.0,
-                value=1.5,
-                step=0.1,
-                help="值越小，检测越严格，越容易标记异常"
-            )
-            st.caption(f"当前阈值: {threshold} (标准值: 1.5)")
-            if st.button("应用阈值设置"):
-                # 使用新阈值重新检测
-                outlier_indices, outlier_data, lower_bound, upper_bound = detect_outliers(
-                    st.session_state.df, 
-                    st.session_state.model, 
-                    st.session_state.poly,
-                    threshold=threshold
-                )
-                if len(outlier_data) > 0:
-                    st.session_state._outlier_indices = outlier_indices
-                    st.session_state._outlier_data = outlier_data
-                    st.session_state._outlier_count = len(outlier_data)
-                    st.success(f"✅ 使用阈值 {threshold} 检测到 {len(outlier_data)} 个异常数据点")
-                else:
-                    st.success(f"✅ 使用阈值 {threshold} 未发现异常数据点")
-                    st.session_state._outlier_data = None
-
-    # ============================================================
-    # 新增：图表坐标轴设置区域
-    # ============================================================
-    st.markdown("---")
-    st.markdown("#### 📐 图表坐标轴设置")
-    
-    if st.session_state.model_trained and st.session_state.df is not None:
-        # 启用自定义坐标轴
-        use_custom = st.checkbox("启用自定义坐标轴", value=st.session_state.use_custom_axis)
-        st.session_state.use_custom_axis = use_custom
-        
-        if use_custom:
-            # 获取当前数据范围作为参考
-            X = st.session_state.df[['点位数']].values
-            y = st.session_state.df['实际工时'].values
-            x_data_max = X.max()
-            y_data_max = y.max()
-            
-            st.caption(f"📊 当前数据范围：X轴 0~{x_data_max:.0f}，Y轴 0~{y_data_max:.0f}")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.markdown("**X轴设置（点位数）**")
-                
-                # X轴最大值
-                x_max_input = st.number_input(
-                    "X轴最大值",
-                    min_value=0,
-                    value=int(x_data_max * 1.1) if st.session_state.chart_x_max is None else int(st.session_state.chart_x_max),
-                    step=50,
-                    key="x_max_input"
-                )
-                if x_max_input > 0:
-                    st.session_state.chart_x_max = x_max_input
-                else:
-                    st.session_state.chart_x_max = None
-                
-                # X轴刻度步长
-                x_tick_options = [10, 20, 25, 50, 100, 200, 250, 500]
-                x_tick_default = 50 if x_data_max > 100 else 10
-                if st.session_state.chart_x_tick is not None:
-                    x_tick_default = st.session_state.chart_x_tick
-                x_tick_input = st.selectbox(
-                    "X轴刻度步长",
-                    options=x_tick_options,
-                    index=x_tick_options.index(x_tick_default) if x_tick_default in x_tick_options else 0,
-                    key="x_tick_select"
-                )
-                st.session_state.chart_x_tick = x_tick_input
-            
-            with col2:
-                st.markdown("**Y轴设置（工时）**")
-                
-                # Y轴最大值
-                y_max_input = st.number_input(
-                    "Y轴最大值",
-                    min_value=0,
-                    value=int(y_data_max * 1.2) if st.session_state.chart_y_max is None else int(st.session_state.chart_y_max),
-                    step=50,
-                    key="y_max_input"
-                )
-                if y_max_input > 0:
-                    st.session_state.chart_y_max = y_max_input
-                else:
-                    st.session_state.chart_y_max = None
-                
-                # Y轴刻度步长
-                y_tick_options = [10, 20, 25, 50, 100, 200, 250, 500]
-                y_tick_default = 50 if y_data_max > 100 else 10
-                if st.session_state.chart_y_tick is not None:
-                    y_tick_default = st.session_state.chart_y_tick
-                y_tick_input = st.selectbox(
-                    "Y轴刻度步长",
-                    options=y_tick_options,
-                    index=y_tick_options.index(y_tick_default) if y_tick_default in y_tick_options else 0,
-                    key="y_tick_select"
-                )
-                st.session_state.chart_y_tick = y_tick_input
-            
-            # 重置按钮
-            if st.button("🔄 重置为自动", use_container_width=True):
-                st.session_state.chart_x_max = None
-                st.session_state.chart_y_max = None
-                st.session_state.chart_x_tick = None
-                st.session_state.chart_y_tick = None
-                st.session_state.use_custom_axis = False
-                st.rerun()
-        else:
-            # 未启用自定义时，显示当前使用的设置
-            st.caption("当前使用自动坐标轴设置")
-            if st.session_state.chart_x_max is not None or st.session_state.chart_y_max is not None:
-                st.caption(f"X轴: {st.session_state.chart_x_max or '自动'}, Y轴: {st.session_state.chart_y_max or '自动'}")
 
     st.markdown("---")
     with st.expander("📋 示例数据格式"):
@@ -712,17 +404,6 @@ with left_col:
             
             plot_placeholder = st.empty()
             
-            # 获取异常数据（如果有）
-            outliers_df = None
-            if hasattr(st.session_state, '_outlier_data') and st.session_state._outlier_data is not None:
-                outliers_df = st.session_state._outlier_data
-            
-            # 获取图表设置
-            x_max = st.session_state.chart_x_max if st.session_state.use_custom_axis else None
-            y_max = st.session_state.chart_y_max if st.session_state.use_custom_axis else None
-            x_tick = st.session_state.chart_x_tick if st.session_state.use_custom_axis else None
-            y_tick = st.session_state.chart_y_tick if st.session_state.use_custom_axis else None
-            
             if st.session_state.last_prediction is not None:
                 fig = plot_chart(
                     st.session_state.df,
@@ -730,27 +411,12 @@ with left_col:
                     st.session_state.poly,
                     st.session_state.mape,
                     point_count=st.session_state.last_prediction["point_count"],
-                    predicted_time=st.session_state.last_prediction["predicted"],
-                    outliers_df=outliers_df,
-                    x_max=x_max,
-                    y_max=y_max,
-                    x_tick_step=x_tick,
-                    y_tick_step=y_tick
+                    predicted_time=st.session_state.last_prediction["predicted"]
                 )
                 plot_placeholder.pyplot(fig, use_container_width=True)
                 plt.close(fig)
             else:
-                fig = plot_chart(
-                    st.session_state.df, 
-                    st.session_state.model, 
-                    st.session_state.poly, 
-                    st.session_state.mape,
-                    outliers_df=outliers_df,
-                    x_max=x_max,
-                    y_max=y_max,
-                    x_tick_step=x_tick,
-                    y_tick_step=y_tick
-                )
+                fig = plot_chart(st.session_state.df, st.session_state.model, st.session_state.poly, st.session_state.mape)
                 plot_placeholder.pyplot(fig, use_container_width=True)
                 plt.close(fig)
     else:
