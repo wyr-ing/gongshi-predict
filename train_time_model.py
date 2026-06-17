@@ -11,7 +11,6 @@ from datetime import datetime
 from sklearn.linear_model import LinearRegression
 from sklearn.preprocessing import PolynomialFeatures
 from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
-from scipy import stats
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -41,10 +40,8 @@ HISTORY_FILE = "prediction_history.json"
 def get_screen_size():
     try:
         screen_width = st.session_state.get('screen_width', 1200)
-        screen_height = st.session_state.get('screen_height', 800)
     except:
         screen_width = 1200
-        screen_height = 800
     
     if screen_width < 768:
         fig_width = 6
@@ -154,7 +151,7 @@ def load_saved_data():
     return None
 
 # ============================================================
-# 训练预测模型（含置信区间计算）
+# 训练预测模型
 # ============================================================
 def train_prediction_model(df):
     X = df[['点位数']].values
@@ -166,105 +163,59 @@ def train_prediction_model(df):
     model.fit(X_poly, y)
     y_pred = model.predict(X_poly)
     
-    # 计算残差
     residuals = y - y_pred
     
-    # 计算评估指标
     r2 = r2_score(y, y_pred)
     mae = mean_absolute_error(y, y_pred)
     mape = np.mean(np.abs((y - y_pred) / y)) * 100
     
-    # 计算置信区间参数
-    n = len(residuals)
-    std_residuals = np.std(residuals, ddof=1)
-    mean_residual = np.mean(residuals)
-    
-    # 95% 置信区间
-    confidence_level = 0.95
-    t_value = stats.t.ppf((1 + confidence_level) / 2, n - 2)
-    ci_margin = t_value * std_residuals * np.sqrt(1 + 1/n)  # 预测区间
-    
-    return model, poly, r2, mae, mape, residuals, ci_margin, mean_residual
+    return model, poly, r2, mae, mape, residuals, y_pred
 
 # ============================================================
-# 自动检测并剔除异常数据（基于置信区间）
+# 检测异常数据（基于残差标准差，可调阈值）
 # ============================================================
-def auto_clean_data(df, confidence_level=0.95, outlier_threshold=2.5):
+def detect_outliers_by_std(df, model, poly, threshold_std=3.0):
     """
-    自动检测并剔除异常数据
-    confidence_level: 置信度 (0.90, 0.95, 0.99)
-    outlier_threshold: 异常值倍数阈值 (默认2.5倍标准差)
+    基于残差标准差检测异常数据
+    threshold_std: 标准差倍数，值越大越宽松
     """
     X = df[['点位数']].values
     y = df['实际工时'].values
     
-    # 训练初始模型
-    poly = PolynomialFeatures(degree=2)
-    X_poly = poly.fit_transform(X)
-    model = LinearRegression()
-    model.fit(X_poly, y)
+    X_poly = poly.transform(X)
     y_pred = model.predict(X_poly)
     
-    # 计算残差
     residuals = y - y_pred
     std_residual = np.std(residuals, ddof=1)
     mean_residual = np.mean(residuals)
     
-    # 方法1：基于置信区间（残差超出 t 分布置信区间）
-    n = len(residuals)
-    t_value = stats.t.ppf((1 + confidence_level) / 2, n - 2)
-    ci_margin = t_value * std_residual * np.sqrt(1 + 1/n)
+    # 计算阈值
+    threshold = threshold_std * std_residual
     
-    # 方法2：基于标准差倍数（更严格）
-    std_threshold = outlier_threshold * std_residual
-    
-    # 综合判断：取两种方法中更严格的
-    threshold = max(ci_margin, std_threshold)
-    
-    # 识别异常数据
+    # 检测异常（残差绝对值超出阈值）
     outlier_mask = np.abs(residuals) > threshold
+    
     outlier_indices = df.index[outlier_mask].tolist()
     outlier_data = df.loc[outlier_mask].copy()
     outlier_data['残差'] = residuals[outlier_mask]
     outlier_data['预测值'] = y_pred[outlier_mask]
     outlier_data['残差百分比'] = (residuals[outlier_mask] / y[outlier_mask] * 100)
-    outlier_data['是否异常'] = '异常'
     
     # 正常数据
     clean_df = df.loc[~outlier_mask].copy()
     
-    # 统计信息
-    clean_stats = {
-        'original_count': len(df),
+    stats = {
+        'total_count': len(df),
         'outlier_count': len(outlier_data),
-        'cleaned_count': len(clean_df),
-        'outlier_ratio': len(outlier_data) / len(df) * 100,
-        'threshold': threshold,
-        'confidence_level': confidence_level,
+        'clean_count': len(clean_df),
+        'outlier_ratio': len(outlier_data) / len(df) * 100 if len(df) > 0 else 0,
+        'threshold_std': threshold_std,
+        'threshold_value': threshold,
         'std_residual': std_residual,
-        'ci_margin': ci_margin
+        'mean_residual': mean_residual
     }
     
-    # 如果异常数据比例超过30%，说明数据质量太差，使用更宽松的阈值
-    if clean_stats['outlier_ratio'] > 30:
-        # 使用2.5倍标准差重新检测
-        new_threshold = 2.5 * std_residual
-        new_outlier_mask = np.abs(residuals) > new_threshold
-        new_outlier_indices = df.index[new_outlier_mask].tolist()
-        new_outlier_data = df.loc[new_outlier_mask].copy()
-        new_clean_df = df.loc[~new_outlier_mask].copy()
-        
-        # 更新结果
-        outlier_indices = new_outlier_indices
-        outlier_data = new_outlier_data
-        clean_df = new_clean_df
-        clean_stats['threshold'] = new_threshold
-        clean_stats['outlier_count'] = len(new_outlier_data)
-        clean_stats['cleaned_count'] = len(new_clean_df)
-        clean_stats['outlier_ratio'] = len(new_outlier_data) / len(df) * 100
-        clean_stats['note'] = '数据质量较差，使用宽松阈值'
-    
-    return clean_df, outlier_data, outlier_indices, clean_stats
+    return clean_df, outlier_data, outlier_indices, stats
 
 # ============================================================
 # 理论工时计算
@@ -273,10 +224,9 @@ def calculate_theory_time(point_count, a=0.0362, b=0.5):
     return a * point_count + b
 
 # ============================================================
-# 对比图（自适应版 + 置信区间显示）
+# 对比图（自适应版）
 # ============================================================
-def plot_chart(df, model, poly, mape, residuals=None, ci_margin=None, 
-               point_count=None, predicted_time=None, outlier_df=None):
+def plot_chart(df, model, poly, mape, point_count=None, predicted_time=None, outlier_df=None):
     
     screen = get_screen_size()
     
@@ -294,35 +244,26 @@ def plot_chart(df, model, poly, mape, residuals=None, ci_margin=None,
     fig, ax = plt.subplots(figsize=(screen['fig_width'], screen['fig_height']), dpi=100)
     fig.subplots_adjust(left=0.08, right=0.95, top=0.92, bottom=0.12)
 
-    # 1. 正常数据点
+    # 正常数据点
     ax.scatter(X, y, color='#1f77b4', s=screen['marker_size'], alpha=0.7, 
                label='Normal Data', zorder=3)
     
-    # 2. 异常数据点（如果有）
+    # 异常数据点
     if outlier_df is not None and len(outlier_df) > 0:
         ax.scatter(outlier_df['点位数'], outlier_df['实际工时'], 
                    color='red', s=screen['marker_size'] * 1.8, alpha=0.8,
                    marker='x', linewidth=2.5,
                    label=f'Outliers ({len(outlier_df)} removed)', zorder=5)
     
-    # 3. 预测曲线
+    # 预测曲线
     ax.plot(X_smooth, y_pred_smooth, color='#d62728', linewidth=2.5, 
             label='Prediction Curve', zorder=2)
     
-    # 4. 理论直线
+    # 理论直线
     ax.plot(X_smooth, y_theory, color='#2ca02c', linewidth=2, linestyle='--', 
             label='Theory Line', zorder=2)
     
-    # 5. 置信区间（如果有残差数据）
-    if residuals is not None and ci_margin is not None:
-        # 计算置信区间上下界
-        y_upper_ci = y_pred_smooth + ci_margin
-        y_lower_ci = y_pred_smooth - ci_margin
-        ax.fill_between(X_smooth.flatten(), y_lower_ci, y_upper_ci, 
-                        color='#d62728', alpha=0.08, 
-                        label=f'95% Confidence Interval', zorder=1)
-    
-    # 6. 误差带（基于MAPE）
+    # 误差带
     mape_val = mape if mape is not None else 17.0
     y_upper = y_pred_smooth * (1 + mape_val / 100)
     y_lower = y_pred_smooth * (1 - mape_val / 100)
@@ -330,7 +271,7 @@ def plot_chart(df, model, poly, mape, residuals=None, ci_margin=None,
                     color='#d62728', alpha=0.10, 
                     label=f'±{mape_val:.1f}% Error Band')
 
-    # 7. 预测点标记
+    # 预测点标记
     if point_count is not None and predicted_time is not None:
         ax.scatter([point_count], [predicted_time], color='#ff6b6b', 
                    s=screen['marker_size'] * 3.5,
@@ -345,7 +286,7 @@ def plot_chart(df, model, poly, mape, residuals=None, ci_margin=None,
     ax.set_xlabel('Point Count', fontsize=screen['font_size'], fontweight='bold')
     ax.set_ylabel('Time (seconds)', fontsize=screen['font_size'], fontweight='bold')
     
-    # 标题显示数据清理信息
+    # 标题
     title = '📊 Manhour Prediction Chart'
     if outlier_df is not None and len(outlier_df) > 0:
         title += f' (Auto-cleaned: {len(outlier_df)} outliers removed)'
@@ -355,10 +296,7 @@ def plot_chart(df, model, poly, mape, residuals=None, ci_margin=None,
     
     # 坐标轴范围
     x_max = X.max() * 1.15
-    all_y = np.concatenate([y, y_theory, y_pred_smooth])
-    if residuals is not None:
-        all_y = np.concatenate([all_y, y_pred_smooth + ci_margin, y_pred_smooth - ci_margin])
-    y_max = max(all_y) * 1.2
+    y_max = max(y.max(), y_theory.max(), y_pred_smooth.max()) * 1.2
     
     ax.set_xlim(0, x_max)
     ax.set_ylim(0, max(y_max, 10))
@@ -494,9 +432,9 @@ if "model_trained" not in st.session_state:
     st.session_state.r2 = None
     st.session_state.mae = None
     st.session_state.residuals = None
-    st.session_state.ci_margin = None
     st.session_state.outlier_df = None
     st.session_state.clean_stats = None
+    st.session_state.raw_df = None
     
 if "upload_authorized" not in st.session_state:
     st.session_state.upload_authorized = False
@@ -506,41 +444,35 @@ if "last_prediction" not in st.session_state:
 if "last_prediction_result" not in st.session_state:
     st.session_state.last_prediction_result = None
 
-if "auto_clean_enabled" not in st.session_state:
-    st.session_state.auto_clean_enabled = True  # 默认开启自动清理
+# 异常剔除阈值（默认3.0倍标准差）
+if "outlier_threshold" not in st.session_state:
+    st.session_state.outlier_threshold = 3.0
 
 if "screen_width" not in st.session_state:
     st.session_state.screen_width = 1200
-if "screen_height" not in st.session_state:
-    st.session_state.screen_height = 800
 
 # ============================================================
-# 自动加载并训练模型（带自动清理）
+# 自动加载数据
 # ============================================================
 if not st.session_state.model_trained:
     saved_df = load_saved_data()
     if saved_df is not None and len(saved_df) > 0:
-        df_to_use = saved_df.copy()
+        st.session_state.raw_df = saved_df.copy()
         
-        # 如果启用自动清理
-        if st.session_state.auto_clean_enabled:
-            # 执行自动清理
-            clean_df, outlier_df, outlier_indices, clean_stats = auto_clean_data(
-                df_to_use, 
-                confidence_level=0.95, 
-                outlier_threshold=2.5
-            )
-            
-            # 保存清理信息
-            st.session_state.outlier_df = outlier_df
-            st.session_state.clean_stats = clean_stats
-            st.session_state.original_df = df_to_use
-            
-            # 使用清理后的数据训练模型
-            df_to_use = clean_df
+        # 先用所有数据训练一次，获取残差
+        temp_model, temp_poly, temp_r2, temp_mae, temp_mape, temp_residuals, temp_y_pred = train_prediction_model(saved_df)
         
-        # 训练模型
-        model, poly, r2, mae, mape, residuals, ci_margin, mean_residual = train_prediction_model(df_to_use)
+        # 检测异常（使用当前阈值）
+        clean_df, outlier_df, outlier_indices, stats = detect_outliers_by_std(
+            saved_df, temp_model, temp_poly, st.session_state.outlier_threshold
+        )
+        
+        st.session_state.outlier_df = outlier_df
+        st.session_state.clean_stats = stats
+        
+        # 用清理后的数据训练最终模型
+        df_to_use = clean_df if len(clean_df) > 0 else saved_df
+        model, poly, r2, mae, mape, residuals, y_pred = train_prediction_model(df_to_use)
         
         st.session_state.model_trained = True
         st.session_state.model = model
@@ -550,19 +482,6 @@ if not st.session_state.model_trained:
         st.session_state.mape = mape
         st.session_state.df = df_to_use
         st.session_state.residuals = residuals
-        st.session_state.ci_margin = ci_margin
-
-# ============================================================
-# 注入 JavaScript 获取屏幕尺寸
-# ============================================================
-st.markdown("""
-<script>
-window.addEventListener('resize', function() {
-    const width = window.innerWidth;
-    const height = window.innerHeight;
-});
-</script>
-""", unsafe_allow_html=True)
 
 # ============================================================
 # 侧边栏
@@ -571,54 +490,69 @@ with st.sidebar:
     st.markdown("### ⚙️ 数据管理")
     if st.session_state.model_trained and st.session_state.df is not None:
         st.success(f"✅ 当前数据：{len(st.session_state.df)} 行")
-        
-        # 显示清理信息
-        if st.session_state.clean_stats is not None:
-            stats = st.session_state.clean_stats
-            if stats['outlier_count'] > 0:
-                st.info(f"🧹 自动清理：移除了 {stats['outlier_count']} 个异常数据")
-                st.caption(f"清理比例：{stats['outlier_ratio']:.1f}%")
-            else:
-                st.success("✅ 数据质量良好，无异常数据")
+        if st.session_state.clean_stats is not None and st.session_state.clean_stats['outlier_count'] > 0:
+            st.info(f"🧹 已剔除 {st.session_state.clean_stats['outlier_count']} 个异常数据")
     else:
         st.warning("⚠️ 暂无数据")
 
     st.markdown("---")
     
     # ============================================================
-    # 自动清理设置
+    # 异常剔除阈值设置（核心功能）
     # ============================================================
-    st.markdown("#### 🧹 数据自动清理")
+    st.markdown("#### 🎯 异常剔除阈值")
+    st.caption("数值越大，剔除越少（越宽松）")
     
-    auto_clean = st.checkbox(
-        "启用自动异常数据清理", 
-        value=st.session_state.auto_clean_enabled,
-        help="自动检测并剔除超出95%置信区间的异常数据"
+    # 滑块：0~5，步长0.1，默认3.0
+    threshold_value = st.slider(
+        "标准差倍数",
+        min_value=0.0,
+        max_value=5.0,
+        value=st.session_state.outlier_threshold,
+        step=0.1,
+        help="0=不剔除，数值越大剔除越少"
     )
     
-    if auto_clean != st.session_state.auto_clean_enabled:
-        st.session_state.auto_clean_enabled = auto_clean
+    # 显示当前设置的效果
+    if threshold_value == 0:
+        st.info("🔓 当前：不剔除任何数据")
+    elif threshold_value <= 2.0:
+        st.warning("⚠️ 当前：严格模式（剔除较多）")
+    elif threshold_value <= 3.5:
+        st.info("✅ 当前：标准模式（推荐）")
+    else:
+        st.success("✅ 当前：宽松模式（剔除较少）")
+    
+    # 如果阈值改变，重新训练
+    if threshold_value != st.session_state.outlier_threshold:
+        st.session_state.outlier_threshold = threshold_value
         st.session_state.model_trained = False
         st.rerun()
     
-    if st.session_state.auto_clean_enabled and st.session_state.clean_stats is not None:
+    # 显示异常统计
+    if st.session_state.clean_stats is not None:
         stats = st.session_state.clean_stats
-        st.caption(f"置信度：{int(stats['confidence_level']*100)}%")
-        st.caption(f"阈值：±{stats['threshold']:.2f} 秒")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("异常数量", stats['outlier_count'])
+        with col2:
+            st.metric("占比", f"{stats['outlier_ratio']:.1f}%")
         
-        # 显示清理详情按钮
-        if stats['outlier_count'] > 0:
-            with st.expander(f"📋 查看异常数据详情 ({stats['outlier_count']}个)"):
-                if st.session_state.outlier_df is not None and len(st.session_state.outlier_df) > 0:
-                    display_df = st.session_state.outlier_df[['点位数', '实际工时', '预测值', '残差', '残差百分比']].copy()
-                    display_df['残差百分比'] = display_df['残差百分比'].round(2)
-                    st.dataframe(display_df, use_container_width=True)
+        st.caption(f"当前阈值：±{stats['threshold_value']:.2f} 秒")
+        st.caption(f"残差标准差：±{stats['std_residual']:.2f} 秒")
     
-    # 手动清理按钮
-    if st.session_state.model_trained and st.session_state.df is not None:
-        if st.button("🔄 重新检测异常数据", use_container_width=True):
-            st.session_state.model_trained = False
-            st.rerun()
+    # 查看异常数据详情
+    if st.session_state.outlier_df is not None and len(st.session_state.outlier_df) > 0:
+        with st.expander(f"📋 查看异常数据 ({len(st.session_state.outlier_df)}个)"):
+            display_df = st.session_state.outlier_df[['点位数', '实际工时', '预测值', '残差', '残差百分比']].copy()
+            display_df['残差百分比'] = display_df['残差百分比'].round(2)
+            st.dataframe(display_df, use_container_width=True)
+    
+    # 重置按钮
+    if st.button("🔄 重置为默认 (3.0倍标准差)", use_container_width=True):
+        st.session_state.outlier_threshold = 3.0
+        st.session_state.model_trained = False
+        st.rerun()
 
     st.markdown("---")
     st.markdown("#### 🔒 管理员验证")
@@ -646,12 +580,8 @@ with st.sidebar:
                 df.columns = ['点位数', '实际工时']
                 df = df.dropna()
                 
-                # 重置训练状态
                 st.session_state.model_trained = False
-                
-                # 保存原始数据
-                df_to_save = df.copy()
-                save_data(df_to_save)
+                save_data(df)
                 
                 st.success(f"✅ 数据已上传，共 {len(df)} 行")
                 st.info(f"识别到列：'{point_col}' → 点位数，'{actual_col}' → 实际工时")
@@ -695,9 +625,13 @@ with left_col:
         with st.container():
             st.markdown("### 📊 模型评估")
             
-            # 显示清理统计
-            if st.session_state.clean_stats is not None and st.session_state.clean_stats['outlier_count'] > 0:
-                st.info(f"🧹 已自动剔除 {st.session_state.clean_stats['outlier_count']} 个异常数据，使用 {len(st.session_state.df)} 条干净数据训练")
+            # 显示清理信息
+            if st.session_state.clean_stats is not None:
+                stats = st.session_state.clean_stats
+                if stats['outlier_count'] > 0:
+                    st.info(f"🧹 已剔除 {stats['outlier_count']} 个异常数据，使用 {len(st.session_state.df)} 条干净数据训练")
+                else:
+                    st.success("✅ 数据质量良好，无异常数据")
             
             col1, col2, col3 = st.columns(3)
             with col1:
@@ -714,7 +648,6 @@ with left_col:
             
             plot_placeholder = st.empty()
             
-            # 获取异常数据
             outlier_df = st.session_state.outlier_df if hasattr(st.session_state, 'outlier_df') else None
             
             if st.session_state.last_prediction is not None:
@@ -723,8 +656,6 @@ with left_col:
                     st.session_state.model,
                     st.session_state.poly,
                     st.session_state.mape,
-                    residuals=st.session_state.residuals,
-                    ci_margin=st.session_state.ci_margin,
                     point_count=st.session_state.last_prediction["point_count"],
                     predicted_time=st.session_state.last_prediction["predicted"],
                     outlier_df=outlier_df
@@ -737,8 +668,6 @@ with left_col:
                     st.session_state.model, 
                     st.session_state.poly, 
                     st.session_state.mape,
-                    residuals=st.session_state.residuals,
-                    ci_margin=st.session_state.ci_margin,
                     outlier_df=outlier_df
                 )
                 plot_placeholder.pyplot(fig, use_container_width=True)
