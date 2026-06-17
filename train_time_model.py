@@ -18,10 +18,13 @@ warnings.filterwarnings('ignore')
 # 页面配置
 # ============================================================
 st.set_page_config(
-    page_title="Manhour Prediction System",
+    page_title="工时预测系统",
     page_icon="⚙️",
     layout="wide"
 )
+
+plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'Arial Unicode MS']
+plt.rcParams['axes.unicode_minus'] = False
 
 # ============================================================
 # 配置
@@ -121,7 +124,7 @@ def calculate_theory_time(point_count, a=0.0362, b=0.5):
     return a * point_count + b
 
 # ============================================================
-# 对比图（英文版 - 无乱码）
+# 对比图（仅图表使用英文，避免乱码）
 # ============================================================
 def plot_chart(df, model, poly, mape, point_count=None, predicted_time=None):
     X = df[['点位数']].values
@@ -138,19 +141,19 @@ def plot_chart(df, model, poly, mape, point_count=None, predicted_time=None):
     fig, ax = plt.subplots(figsize=(12, 6.5))
     fig.subplots_adjust(left=0.08, right=0.95, top=0.92, bottom=0.12)
 
-    # Actual data points
+    # 实际数据点
     ax.scatter(X, y, color='#1f77b4', s=55, alpha=0.7, 
                label='Actual Data', zorder=3)
     
-    # Prediction curve
+    # 预测曲线
     ax.plot(X_smooth, y_pred_smooth, color='#d62728', linewidth=3, 
             label='Prediction Curve', zorder=2)
     
-    # Theory line
+    # 理论直线
     ax.plot(X_smooth, y_theory, color='#2ca02c', linewidth=2.2, linestyle='--', 
             label='Theory Line', zorder=2)
     
-    # Error band
+    # 误差带
     mape_val = mape if mape is not None else 17.0
     y_upper = y_pred_smooth * (1 + mape_val / 100)
     y_lower = y_pred_smooth * (1 - mape_val / 100)
@@ -158,7 +161,7 @@ def plot_chart(df, model, poly, mape, point_count=None, predicted_time=None):
                     color='#d62728', alpha=0.12, 
                     label=f'±{mape_val:.1f}% Error Band')
 
-    # Prediction point
+    # 预测点标记
     if point_count is not None and predicted_time is not None:
         ax.scatter([point_count], [predicted_time], color='#ff6b6b', s=250,
                    edgecolors='white', linewidth=2.5, zorder=6, 
@@ -168,19 +171,20 @@ def plot_chart(df, model, poly, mape, point_count=None, predicted_time=None):
 
     ax.legend(loc='upper left', fontsize=9.5, framealpha=0.92, edgecolor='#ccc')
     
+    # 坐标轴标签（英文）
     ax.set_xlabel('Point Count', fontsize=12, fontweight='bold')
     ax.set_ylabel('Time (seconds)', fontsize=12, fontweight='bold')
     ax.set_title('📊 Manhour Prediction Chart', fontsize=14, fontweight='bold', pad=15)
     ax.grid(True, alpha=0.25, linestyle='--')
     
-    # Axis range
+    # 坐标轴范围
     x_max = X.max() * 1.15
     y_max = max(y.max(), y_theory.max(), y_pred_smooth.max()) * 1.2
     
     ax.set_xlim(0, x_max)
     ax.set_ylim(0, y_max)
     
-    # Smart tick settings
+    # 智能刻度设置
     if x_max <= 100:
         x_step = 10
     elif x_max <= 200:
@@ -250,24 +254,24 @@ def chat_with_ai(user_message, prediction_result=None):
         mape_val = prediction_result['mape']
 
         if abs(dev) <= mape_val:
-            status = "within normal range"
+            status = "在正常范围内"
         else:
-            status = "outside normal range"
+            status = "超出正常范围"
 
-        system_prompt = f"""You are an SMT/DIP production line manhour prediction data analysis expert with extensive production line experience.
+        system_prompt = f"""你是SMT/DIP产线工时预测数据分析专家，有丰富的产线经验。
 
-The user entered {point_count} points, and the model predicts {p:.2f} seconds.
-The theoretical standard time is {theory:.2f} seconds, with a deviation of {dev:+.1f}%, which is {status} (normal error range ±{mape_val:.1f}%).
+用户输入了点位数 {point_count}，模型预测工时 {p:.2f} 秒。
+理论标准工时 {theory:.2f} 秒，偏差 {dev:+.1f}%，{status}（正常误差范围 ±{mape_val:.1f}%）。
 
-Please strictly follow this format:
-1. Model predicted time: {p:.2f} seconds.
-2. Theoretical standard time: {theory:.2f} seconds.
-3. Deviation: {dev:+.1f}%, {status}.
-4. Briefly analyze the reasons."""
+请严格按以下格式输出：
+1.模型预测工时 {p:.2f} 秒。
+2.理论标准工时 {theory:.2f} 秒，
+3.偏差 {dev:+.1f}%，{status}。
+4.然后简要分析原因。"""
 
-        user_message = f"The user entered {point_count} points, please analyze the prediction result."
+        user_message = f"用户输入点位数{point_count}，请分析预测结果。"
     else:
-        system_prompt = "You are an SMT/DIP production line manhour prediction data analysis expert. Please prompt the user to enter a specific point count for prediction analysis."
+        system_prompt = "你是SMT/DIP产线工时预测数据分析专家。请提示用户输入具体点位数，以便进行预测分析。"
 
     messages = [{"role": "system", "content": system_prompt}]
     for msg in st.session_state.messages[-10:]:
@@ -285,9 +289,9 @@ Please strictly follow this format:
         response = requests.post(f"{BASE_URL}/chat/completions", json=payload, headers=headers, timeout=60)
         if response.status_code == 200:
             return response.json()["choices"][0]["message"]["content"]
-        return f"API Error: {response.status_code}"
+        return f"API错误：{response.status_code}"
     except Exception as e:
-        return f"Connection failed: {str(e)}"
+        return f"连接失败：{str(e)}"
 
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
@@ -338,28 +342,28 @@ if not st.session_state.model_trained:
 # 侧边栏
 # ============================================================
 with st.sidebar:
-    st.markdown("### ⚙️ Data Management")
+    st.markdown("### ⚙️ 数据管理")
     if st.session_state.model_trained and st.session_state.df is not None:
-        st.success(f"✅ Current data: {len(st.session_state.df)} rows")
+        st.success(f"✅ 当前数据：{len(st.session_state.df)} 行")
     else:
-        st.warning("⚠️ No data available")
+        st.warning("⚠️ 暂无数据")
 
     st.markdown("---")
-    st.markdown("#### 🔒 Admin Verification")
-    admin_pwd = st.text_input("Upload Password", type="password", key="admin_pwd")
-    if st.button("Verify & Upload", use_container_width=True):
+    st.markdown("#### 🔒 管理员验证")
+    admin_pwd = st.text_input("上传密码", type="password", key="admin_pwd")
+    if st.button("验证并上传", use_container_width=True):
         if hash_password(admin_pwd) == hash_password("admin123"):
             st.session_state.upload_authorized = True
-            st.success("Verification successful, please upload data")
+            st.success("验证成功，请上传数据")
         else:
             st.session_state.upload_authorized = False
-            st.error("Wrong password")
+            st.error("密码错误")
 
     if st.session_state.upload_authorized:
         st.markdown("---")
-        st.markdown("#### 📤 Upload Data")
-        st.caption("Supports multi-column Excel files, auto-detects '单板点数' and '实际工时/s' columns")
-        uploaded_file = st.file_uploader("Select Excel file", type=["xlsx", "xls"], label_visibility="collapsed")
+        st.markdown("#### 📤 上传数据")
+        st.caption("支持包含多列的Excel文件，自动识别'单板点数'和'实际工时/s'列")
+        uploaded_file = st.file_uploader("选择Excel文件", type=["xlsx", "xls"], label_visibility="collapsed")
         if uploaded_file:
             df_raw = pd.read_excel(uploaded_file)
             
@@ -379,33 +383,33 @@ with st.sidebar:
                 st.session_state.mape = mape
                 st.session_state.df = df
                 save_data(df)
-                st.success(f"✅ Data saved, {len(df)} rows")
-                st.info(f"Detected: '{point_col}' → Point Count, '{actual_col}' → Actual Time")
+                st.success(f"✅ 数据已保存，共 {len(df)} 行")
+                st.info(f"识别到列：'{point_col}' → 点位数，'{actual_col}' → 实际工时")
                 st.balloons()
                 st.rerun()
             else:
-                st.error(f"❌ Cannot find '单板点数' or '实际工时/s' columns. Current columns: {df_raw.columns.tolist()}")
+                st.error(f"❌ 未找到'单板点数'或'实际工时/s'列，当前列名：{df_raw.columns.tolist()}")
 
     st.markdown("---")
-    with st.expander("📋 Sample Data Format"):
+    with st.expander("📋 示例数据格式"):
         st.markdown("""
-        | Line | Points | Actual Time/s | Theory Time/s |
-        |------|--------|---------------|---------------|
+        | 线别 | 单板点数 | 实际工时/s | 理论工时/s |
+        |------|---------|-----------|-----------|
         | L1 | 71 | 10.22 | 9.67 |
         | L2 | 68 | 57.60 | 68.40 |
         """)
-        st.caption("System auto-detects '单板点数' and '实际工时/s' columns")
+        st.caption("系统会自动识别'单板点数'和'实际工时/s'列")
 
     if os.path.exists(DATA_FILE):
         mod_time = os.path.getmtime(DATA_FILE)
         update_time = datetime.fromtimestamp(mod_time).strftime("%Y-%m-%d %H:%M")
         st.markdown("---")
-        st.caption(f"📅 Data updated: {update_time}")
+        st.caption(f"📅 数据更新：{update_time}")
 
 # ============================================================
 # 标题
 # ============================================================
-st.markdown("<h1 style='text-align: center;'>⚙️ Manhour Prediction System</h1>", unsafe_allow_html=True)
+st.markdown("<h1 style='text-align: center;'>⚙️ 工时预测系统</h1>", unsafe_allow_html=True)
 st.markdown("<hr style='margin: 0.5rem 0;'>", unsafe_allow_html=True)
 
 # ============================================================
@@ -419,19 +423,19 @@ left_col, right_col = st.columns(2, gap="large")
 with left_col:
     if st.session_state.model_trained and st.session_state.df is not None:
         with st.container():
-            st.markdown("### 📊 Model Evaluation")
+            st.markdown("### 📊 模型评估")
             col1, col2, col3 = st.columns(3)
             with col1:
                 st.metric("R²", f"{st.session_state.r2:.3f}" if st.session_state.r2 is not None else "--")
             with col2:
                 mae_value = f"{st.session_state.mae:.2f}" if st.session_state.mae is not None else "--"
-                st.metric("MAE", mae_value, help="Mean Absolute Error (seconds)")
+                st.metric("MAE", mae_value, help="平均绝对误差（秒）")
             with col3:
                 mape_value = f"{st.session_state.mape:.1f}%" if st.session_state.mape is not None else "--"
-                st.metric("MAPE", mape_value, help="Mean Absolute Percentage Error")
+                st.metric("MAPE", mape_value, help="平均绝对百分比误差")
 
         with st.container():
-            st.markdown("### 📈 Comparison Chart")
+            st.markdown("### 📈 对比图")
             
             plot_placeholder = st.empty()
             
@@ -456,14 +460,14 @@ with left_col:
                 plot_placeholder.pyplot(fig, use_container_width=True)
                 plt.close(fig)
     else:
-        st.info("👈 Please upload data in the sidebar")
+        st.info("👈 请在左侧菜单上传数据")
 
 # ============================================================
 # 右侧：AI智能体对话
 # ============================================================
 with right_col:
-    st.markdown("### 🎯 Manhour Prediction Assistant")
-    st.caption("Enter point count, AI estimates manhour | Based on historical data")
+    st.markdown("### 🎯 工时预测小助手")
+    st.caption("输入点位数，AI估算工时 | 基于实际数据训练的预测模型")
 
     chat_container = st.container(height=280)
 
@@ -485,10 +489,10 @@ with right_col:
 
         if abs(dev) <= mape_val:
             status_color = "#2ecc71"
-            status_text = "✅ Reliable"
+            status_text = "✅ 可信"
         else:
             status_color = "#e74c3c"
-            status_text = "⚠️ Out of Range"
+            status_text = "⚠️ 超出正常范围"
 
         st.markdown(f"""
         <div style="background: linear-gradient(135deg, #f0f4ff 0%, #e8eeff 100%); 
@@ -498,17 +502,17 @@ with right_col:
                     margin-bottom: 0.5rem;">
             <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap;">
                 <div>
-                    <span style="font-size: 0.8rem; color: #888;">Last Prediction</span>
+                    <span style="font-size: 0.8rem; color: #888;">上次预测</span>
                     <div style="font-size: 1.4rem; font-weight: 700; color: #1f77b4;">
-                        {point_count} pts → {p:.2f}s
+                        {point_count}点 → {p:.2f}s
                     </div>
                 </div>
                 <div style="text-align: right;">
-                    <span style="font-size: 0.8rem; color: #888;">Theory</span>
+                    <span style="font-size: 0.8rem; color: #888;">理论标准</span>
                     <div style="font-size: 1rem; font-weight: 600;">{theory:.2f}s</div>
                 </div>
                 <div style="text-align: right;">
-                    <span style="font-size: 0.8rem; color: #888;">Deviation</span>
+                    <span style="font-size: 0.8rem; color: #888;">偏差</span>
                     <div style="font-size: 1rem; font-weight: 600; color: {'#2ecc71' if abs(dev) <= mape_val else '#e74c3c'};">
                         {dev:+.1f}%
                     </div>
@@ -522,7 +526,7 @@ with right_col:
         </div>
         """, unsafe_allow_html=True)
 
-    user_input = st.chat_input("Enter point count (e.g., 1000) or ask a question...")
+    user_input = st.chat_input("输入点位数（如 1000）或提问...")
 
     if user_input:
         st.session_state.messages.append({"role": "user", "content": user_input})
@@ -562,7 +566,7 @@ with right_col:
                     "mape": pred_data["mape"]
                 }
 
-        with st.spinner("AI is analyzing..."):
+        with st.spinner("智能体分析中..."):
             response = chat_with_ai(user_input, prediction_result)
 
         st.session_state.messages.append({"role": "assistant", "content": response})
@@ -570,14 +574,14 @@ with right_col:
 
     btn_col1, btn_col2 = st.columns(2)
     with btn_col1:
-        if st.button("🗑️ Clear Chat", use_container_width=True):
+        if st.button("🗑️ 清空对话", use_container_width=True):
             st.session_state.messages = []
             st.rerun()
 
     with btn_col2:
-        with st.expander("📊 Prediction History"):
+        with st.expander("📊 预测历史"):
             if st.session_state.prediction_history:
                 for h in st.session_state.prediction_history[-20:]:
-                    st.write(f"- {h['point_count']} pts: {h['predicted']:.1f}s (deviation {h['deviation_pct']:+.1f}%)")
+                    st.write(f"- {h['point_count']}点: {h['predicted']:.1f}秒 (偏差{h['deviation_pct']:+.1f}%)")
             else:
-                st.write("No prediction records")
+                st.write("暂无预测记录")
