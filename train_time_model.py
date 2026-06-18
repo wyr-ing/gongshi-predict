@@ -2,7 +2,12 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import seaborn as sns
+import requests
+import re
+import os
+import json
+import hashlib
+from datetime import datetime
 from sklearn.linear_model import LinearRegression, RANSACRegressor
 from sklearn.preprocessing import PolynomialFeatures
 from sklearn.pipeline import make_pipeline
@@ -62,13 +67,17 @@ def get_column_mapping(df):
     return point_col, actual_col
 
 # ============================================================
-# 数据加载
+# 数据保存/加载
 # ============================================================
 def get_data_file(line_type):
     if line_type == "SMT":
         return DATA_FILE_SMT
     else:
         return DATA_FILE_DIP
+
+def save_data(df, line_type):
+    data_file = get_data_file(line_type)
+    df.to_excel(data_file, index=False)
 
 def load_saved_data(line_type):
     data_file = get_data_file(line_type)
@@ -104,7 +113,7 @@ def data_exploration(df):
         '实际工时': ['count', 'mean', 'std', 'min', 'max', lambda x: x.quantile(0.25), lambda x: x.quantile(0.75)]
     }).reset_index()
     grouped.columns = ['点位数', '样本数', '均值', '标准差', '最小值', '最大值', 'Q1', 'Q3']
-    grouped['变异系数'] = grouped['标准差'] / grouped['均值']  # CV > 1 表示离散度很大
+    grouped['变异系数'] = grouped['标准差'] / grouped['均值']
     
     report['分组统计'] = grouped
     
@@ -112,10 +121,6 @@ def data_exploration(df):
     high_cv = grouped[grouped['变异系数'] > 0.5]
     report['高离散点位'] = len(high_cv)
     report['高离散点位详情'] = high_cv.sort_values('变异系数', ascending=False).head(20)
-    
-    # 样本量分布
-    sample_counts = grouped['样本数'].value_counts().sort_index()
-    report['点位样本量分布'] = sample_counts
     
     return report
 
@@ -131,7 +136,6 @@ def clean_data_by_group(df, sigma=3.0):
         group = df[df['点位数'] == point]
         
         if len(group) < 3:
-            # 样本太少，全部保留
             clean_list.append(group)
             continue
         
@@ -170,7 +174,6 @@ def segment_model(df):
     models = {}
     segments = {}
     
-    # 定义分段区间
     segments_config = [
         ('small', 1, 50, '线性回归', LinearRegression()),
         ('medium', 51, 150, '二次多项式', make_pipeline(PolynomialFeatures(2), LinearRegression())),
@@ -232,35 +235,57 @@ def predict_by_segment(point_count, models):
         return None, None, None
 
 # ============================================================
-# 绘图函数
+# 绘图函数（纯matplotlib，不依赖seaborn）
 # ============================================================
+def plot_exploration(df, grouped):
+    """数据探索可视化 - 使用纯matplotlib"""
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    
+    # 图1：点位样本量分布
+    sample_data = grouped.groupby('点位数')['样本数'].first().reset_index()
+    axes[0].bar(sample_data['点位数'], sample_data['样本数'], color='steelblue', alpha=0.7, width=0.8)
+    axes[0].set_xlabel('点位数', fontsize=11)
+    axes[0].set_ylabel('样本数', fontsize=11)
+    axes[0].set_title('各点位样本量分布', fontsize=13, fontweight='bold')
+    axes[0].grid(True, alpha=0.3)
+    axes[0].set_xlim(0, sample_data['点位数'].max() * 1.05)
+    
+    # 图2：变异系数分布
+    cv_data = grouped[grouped['变异系数'] <= 2]['变异系数'].dropna()
+    if len(cv_data) > 0:
+        axes[1].hist(cv_data, bins=min(30, len(cv_data)), color='coral', alpha=0.7, edgecolor='black')
+        axes[1].axvline(x=0.5, color='red', linestyle='--', linewidth=2, label='CV=0.5 (高离散阈值)')
+        axes[1].set_xlabel('变异系数 (CV = 标准差/均值)', fontsize=11)
+        axes[1].set_ylabel('点位数量', fontsize=11)
+        axes[1].set_title('各点位工时变异系数分布', fontsize=13, fontweight='bold')
+        axes[1].legend(fontsize=10)
+        axes[1].grid(True, alpha=0.3)
+    else:
+        axes[1].text(0.5, 0.5, '数据不足以绘制变异系数分布', ha='center', va='center', fontsize=14)
+        axes[1].set_title('各点位工时变异系数分布', fontsize=13, fontweight='bold')
+    
+    plt.tight_layout()
+    return fig
+
 def plot_segment_chart(df, models, clean_df=None, outlier_df=None, 
                        point_count=None, predicted_time=None, line_type="SMT"):
+    """分段建模预测图 - 使用纯matplotlib"""
     
-    screen = {
-        'fig_width': 12,
-        'fig_height': 6.5,
-        'marker_size': 45,
-        'font_size': 11,
-        'title_size': 14,
-        'legend_size': 9.5
-    }
-    
-    fig, ax = plt.subplots(figsize=(screen['fig_width'], screen['fig_height']), dpi=100)
+    fig, ax = plt.subplots(figsize=(12, 6.5), dpi=100)
     
     # 原始数据（浅色）
-    ax.scatter(df['点位数'], df['实际工时'], color='#cccccc', s=screen['marker_size']*0.3, 
+    ax.scatter(df['点位数'], df['实际工时'], color='#cccccc', s=15, 
                alpha=0.3, label='原始数据', zorder=1)
     
     # 清洗后数据（深色）
     if clean_df is not None and len(clean_df) > 0:
         ax.scatter(clean_df['点位数'], clean_df['实际工时'], color='#1f77b4', 
-                   s=screen['marker_size']*0.7, alpha=0.6, label='清洗后数据', zorder=3)
+                   s=30, alpha=0.6, label='清洗后数据', zorder=3)
     
     # 异常值（红色）
     if outlier_df is not None and len(outlier_df) > 0:
         ax.scatter(outlier_df['点位数'], outlier_df['实际工时'], color='red', 
-                   s=screen['marker_size'], alpha=0.5, marker='x', 
+                   s=50, alpha=0.5, marker='x', linewidths=2,
                    label=f'异常值 ({len(outlier_df)}个)', zorder=4)
     
     # 绘制各段的预测曲线
@@ -291,23 +316,26 @@ def plot_segment_chart(df, models, clean_df=None, outlier_df=None,
         
         # 标注模型性能
         mid_x = (X_min + X_max) / 2
-        mid_y = info['model'].predict(np.array([[mid_x]]))[0]
-        ax.text(mid_x, mid_y * 1.1, f'R²={info["r2"]:.3f}', 
-                fontsize=8, color=colors.get(name, '#333'), ha='center')
+        if mid_x > 0:
+            try:
+                mid_y = info['model'].predict(np.array([[mid_x]]))[0]
+                ax.text(mid_x, mid_y * 1.08, f'R²={info["r2"]:.3f}', 
+                        fontsize=8, color=colors.get(name, '#333'), ha='center')
+            except:
+                pass
     
     # 预测点
     if point_count is not None and predicted_time is not None:
         ax.scatter([point_count], [predicted_time], color='#ff6b6b', 
-                   s=screen['marker_size'] * 2.5,
-                   edgecolors='white', linewidth=2, zorder=6,
+                   s=120, edgecolors='white', linewidth=2, zorder=6,
                    label=f'预测: {point_count}点 → {predicted_time:.1f}s')
         ax.axvline(x=point_count, color='#ff6b6b', linestyle=':', alpha=0.6)
         ax.axhline(y=predicted_time, color='#ff6b6b', linestyle=':', alpha=0.6)
     
-    ax.set_xlabel('点位数', fontsize=screen['font_size'], fontweight='bold')
-    ax.set_ylabel('工时 (秒)', fontsize=screen['font_size'], fontweight='bold')
-    ax.set_title(f'📊 {line_type} 分段建模预测图', fontsize=screen['title_size'], fontweight='bold')
-    ax.legend(loc='upper left', fontsize=screen['legend_size'])
+    ax.set_xlabel('点位数', fontsize=11, fontweight='bold')
+    ax.set_ylabel('工时 (秒)', fontsize=11, fontweight='bold')
+    ax.set_title(f'📊 {line_type} 分段建模预测图', fontsize=14, fontweight='bold')
+    ax.legend(loc='upper left', fontsize=9.5)
     ax.grid(True, alpha=0.25)
     
     # 坐标轴范围
@@ -315,35 +343,6 @@ def plot_segment_chart(df, models, clean_df=None, outlier_df=None,
     y_max = df['实际工时'].max() * 1.2
     ax.set_xlim(0, x_max)
     ax.set_ylim(0, max(y_max, 10))
-    
-    plt.tight_layout()
-    return fig
-
-# ============================================================
-# 数据探索可视化
-# ============================================================
-def plot_exploration(df, grouped):
-    screen = {'fig_width': 12, 'fig_height': 5}
-    
-    fig, axes = plt.subplots(1, 2, figsize=(screen['fig_width'], screen['fig_height']))
-    
-    # 图1：点位样本量分布
-    sample_counts = grouped.groupby('点位数')['样本数'].first()
-    axes[0].bar(sample_counts.index, sample_counts.values, color='steelblue', alpha=0.7)
-    axes[0].set_xlabel('点位数')
-    axes[0].set_ylabel('样本数')
-    axes[0].set_title('各点位样本量分布')
-    axes[0].grid(True, alpha=0.3)
-    
-    # 图2：变异系数分布
-    cv_data = grouped[grouped['变异系数'] <= 2]['变异系数']  # 过滤极端值
-    axes[1].hist(cv_data, bins=30, color='coral', alpha=0.7, edgecolor='black')
-    axes[1].axvline(x=0.5, color='red', linestyle='--', label='CV=0.5 (高离散阈值)')
-    axes[1].set_xlabel('变异系数 (CV = 标准差/均值)')
-    axes[1].set_ylabel('点位数量')
-    axes[1].set_title('各点位工时变异系数分布')
-    axes[1].legend()
-    axes[1].grid(True, alpha=0.3)
     
     plt.tight_layout()
     return fig
@@ -470,23 +469,23 @@ if df_raw is not None and len(df_raw) > 0:
             
             with col1:
                 st.markdown("**各点位样本量分布**")
-                sample_counts = grouped['点位数'].value_counts().sort_index()
+                sample_data = grouped.groupby('点位数')['样本数'].first().reset_index()
                 sample_df = pd.DataFrame({
-                    '样本量': sample_counts.index,
-                    '点位数量': sample_counts.values
+                    '点位数': sample_data['点位数'],
+                    '样本数': sample_data['样本数']
                 })
-                st.dataframe(sample_df, use_container_width=True, height=200)
+                st.dataframe(sample_df, use_container_width=True, height=250)
             
             with col2:
                 st.markdown("**高离散点位 (CV > 0.5)**")
                 high_cv = report['高离散点位详情']
                 if len(high_cv) > 0:
                     st.dataframe(high_cv[['点位数', '样本数', '均值', '标准差', '变异系数']], 
-                                 use_container_width=True, height=200)
+                                 use_container_width=True, height=250)
                 else:
                     st.success("✅ 所有点位变异系数均 ≤ 0.5，数据质量良好")
             
-            # 变异系数分布图
+            # 变异系数分布图（纯matplotlib）
             st.markdown("**变异系数分布**")
             fig = plot_exploration(df_raw, grouped)
             st.pyplot(fig)
@@ -497,17 +496,16 @@ if df_raw is not None and len(df_raw) > 0:
     # ============================================================
     with st.expander("🎯 分段建模结果", expanded=True):
         if models is not None and len(models) > 0:
-            col1, col2, col3 = st.columns(3)
-            
-            cols = [col1, col2, col3]
+            cols = st.columns(3)
             for idx, (name, info) in enumerate(models.items()):
                 with cols[idx % 3]:
+                    color = '#2ecc71' if info['r2'] > 0.7 else '#f39c12' if info['r2'] > 0.4 else '#e74c3c'
                     st.markdown(f"""
-                    <div style="background: #f8f9fa; padding: 0.8rem; border-radius: 8px; margin: 0.2rem 0;">
+                    <div style="background: #f8f9fa; padding: 0.8rem; border-radius: 8px; margin: 0.2rem 0; border-left: 4px solid {color};">
                         <b>{info['method']}</b><br>
                         <span style="color: #666; font-size: 0.85rem;">{info['range']}</span><br>
                         样本数: {info['sample_count']}<br>
-                        R²: <b style="color: {'#2ecc71' if info['r2'] > 0.7 else '#f39c12' if info['r2'] > 0.4 else '#e74c3c'};">{info['r2']:.3f}</b><br>
+                        R²: <b style="color: {color};">{info['r2']:.3f}</b><br>
                         MAE: {info['mae']:.2f}s<br>
                         MAPE: {info['mape']:.1f}%
                     </div>
@@ -518,8 +516,8 @@ if df_raw is not None and len(df_raw) > 0:
     # ============================================================
     st.markdown("### 📈 分段建模预测图")
     
-    # 获取异常值（原始数据中不在清洗后数据中的部分）
     if df_clean is not None:
+        # 找出异常值（原始数据中不在清洗后数据中的部分）
         outlier_df = df_raw[~df_raw.index.isin(df_clean.index)]
     else:
         outlier_df = pd.DataFrame()
@@ -543,11 +541,12 @@ if df_raw is not None and len(df_raw) > 0:
     col1, col2 = st.columns([1, 2])
     
     with col1:
+        max_point = int(df_raw['点位数'].max() * 1.5)
         point_input = st.number_input(
             "输入点位数",
             min_value=1,
-            max_value=int(df_raw['点位数'].max() * 1.5),
-            value=50,
+            max_value=max_point,
+            value=min(50, max_point),
             step=5
         )
         
@@ -621,4 +620,4 @@ else:
                 else:
                     st.error("❌ 数据为空或包含无效值")
             else:
-                st.error(f"❌ 未找到'单板点数'/'元件总数'或'实际工时/s'列")
+                st.error(f"❌ 未找到'单板点数'/'元件总数'或'实际工时/s'列，当前列名：{df_raw.columns.tolist()}")
