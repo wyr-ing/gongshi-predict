@@ -409,15 +409,16 @@ st.markdown("<hr style='margin: 0.5rem 0;'>", unsafe_allow_html=True)
 # ============================================================
 # 左右两栏
 # ============================================================
-left_col, right_col = st.columns(2, gap="large")
+left_col, right_col = st.columns([1, 1], gap="large")
 
 # ============================================================
-# 左侧：模型评估 + 图表
+# 左侧：模型评估 → 对比图 → 预测区域
 # ============================================================
 with left_col:
     if st.session_state.models is not None:
         models = st.session_state.models
         
+        # 模型评估
         with st.container():
             st.markdown("### 📊 模型评估")
             col1, col2 = st.columns(2)
@@ -436,6 +437,7 @@ with left_col:
                 else:
                     st.metric("双面 R²", "无数据")
         
+        # 对比图
         with st.container():
             st.markdown("### 📈 对比图")
             plot_placeholder = st.empty()
@@ -455,113 +457,119 @@ with left_col:
                 fig = plot_chart(models)
                 plot_placeholder.pyplot(fig, use_container_width=True)
                 plt.close(fig)
+        
+        # ============================================================
+        # 预测区域（放在左侧对比图下方）
+        # ============================================================
+        st.markdown("---")
+        st.markdown("### 🎯 SMT工时预测")
+        
+        board_type = st.radio(
+            "选择板类型",
+            ["单面", "双面"],
+            horizontal=True,
+            key="board_type_left"
+        )
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            top_points = st.number_input("TOP面点数", min_value=0, value=100, step=10, key="top_points_left")
+        with col2:
+            if board_type == "双面":
+                bot_points = st.number_input("BOT面点数", min_value=0, value=50, step=10, key="bot_points_left")
+            else:
+                bot_points = 0
+                st.markdown("**BOT面点数**")
+                st.caption("单面板无需输入")
+        
+        if st.button("🚀 预测", use_container_width=True, key="predict_btn_left"):
+            if st.session_state.models is not None:
+                result = predict_time(board_type, top_points, bot_points, st.session_state.models)
+                if result:
+                    result['top_points'] = top_points
+                    result['bot_points'] = bot_points
+                    st.session_state.last_prediction_result = result
+                    st.session_state.last_prediction = {
+                        'top_points': top_points,
+                        'bot_points': bot_points,
+                        'board_type': board_type,
+                        'total_time': result['total_time']
+                    }
+                    st.rerun()
+            else:
+                st.error("请先上传数据")
+        
+        # 显示预测结果
+        if st.session_state.last_prediction_result is not None:
+            result = st.session_state.last_prediction_result
+            
+            if result['model_type'] == '单面':
+                st.markdown(f"""
+                <div style="background: linear-gradient(135deg, #e8f5e9, #c8e6c9); 
+                            padding: 0.8rem 1rem; border-radius: 10px; border-left: 4px solid #2e7d32; margin-top: 0.5rem;">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <div>
+                            <span style="color: #555; font-size: 0.85rem;">📌 单面板</span>
+                            <div style="font-size: 1.6rem; font-weight: 700; color: #2e7d32;">
+                                {result['total_time']:.1f}s
+                            </div>
+                            <span style="color: #666; font-size: 0.8rem;">TOP面工时</span>
+                        </div>
+                        <div style="text-align: right;">
+                            <span style="color: #666; font-size: 0.8rem;">点位数</span>
+                            <div style="font-size: 1.1rem; font-weight: 600;">{top_points}</div>
+                            <span style="color: #888; font-size: 0.7rem;">R²={result.get('r2', 0):.3f}</span>
+                        </div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+            else:
+                st.markdown(f"""
+                <div style="background: linear-gradient(135deg, #e3f2fd, #bbdefb); 
+                            padding: 0.8rem 1rem; border-radius: 10px; border-left: 4px solid #1565c0; margin-top: 0.5rem;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap;">
+                        <div>
+                            <span style="color: #555; font-size: 0.85rem;">📌 双面板</span>
+                            <div style="font-size: 1.6rem; font-weight: 700; color: #1565c0;">
+                                {result['total_time']:.1f}s
+                            </div>
+                            <span style="color: #666; font-size: 0.8rem;">总工时</span>
+                        </div>
+                        <div style="text-align: center;">
+                            <span style="color: #666; font-size: 0.7rem;">TOP</span>
+                            <div style="font-size: 0.95rem; font-weight: 600;">{result['top_time']:.1f}s</div>
+                            <span style="color: #888; font-size: 0.65rem;">{top_points}点</span>
+                        </div>
+                        <div style="text-align: center;">
+                            <span style="color: #666; font-size: 0.7rem;">BOT</span>
+                            <div style="font-size: 0.95rem; font-weight: 600;">{result['bot_time']:.1f}s</div>
+                            <span style="color: #888; font-size: 0.65rem;">{bot_points}点</span>
+                        </div>
+                        <div style="text-align: right;">
+                            <span style="color: #888; font-size: 0.7rem;">R²={result.get('r2', 0):.3f}</span>
+                        </div>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
     else:
         st.info("👈 请上传数据")
 
 # ============================================================
-# 右侧：预测 + AI对话
+# 右侧：AI对话
 # ============================================================
 with right_col:
-    st.markdown("### 🎯 SMT工时预测")
-    
-    board_type = st.radio(
-        "选择板类型",
-        ["单面", "双面"],
-        horizontal=True
-    )
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        top_points = st.number_input("TOP面点数", min_value=0, value=100, step=10)
-    with col2:
-        if board_type == "双面":
-            bot_points = st.number_input("BOT面点数", min_value=0, value=50, step=10)
-        else:
-            bot_points = 0
-            st.markdown("**BOT面点数**")
-            st.caption("单面板无需输入")
-    
-    if st.button("🚀 预测", use_container_width=True):
-        if st.session_state.models is not None:
-            result = predict_time(board_type, top_points, bot_points, st.session_state.models)
-            if result:
-                result['top_points'] = top_points
-                result['bot_points'] = bot_points
-                st.session_state.last_prediction_result = result
-                st.session_state.last_prediction = {
-                    'top_points': top_points,
-                    'bot_points': bot_points,
-                    'board_type': board_type,
-                    'total_time': result['total_time']
-                }
-                st.rerun()
-        else:
-            st.error("请先上传数据")
-    
-    if st.session_state.last_prediction_result is not None:
-        result = st.session_state.last_prediction_result
-        
-        if result['model_type'] == '单面':
-            st.markdown(f"""
-            <div style="background: linear-gradient(135deg, #e8f5e9, #c8e6c9); 
-                        padding: 1rem; border-radius: 10px; border-left: 4px solid #2e7d32;">
-                <div style="display: flex; justify-content: space-between;">
-                    <div>
-                        <span style="color: #555;">📌 单面板</span>
-                        <div style="font-size: 1.8rem; font-weight: 700; color: #2e7d32;">
-                            {result['total_time']:.1f}s
-                        </div>
-                        <span style="color: #666; font-size: 0.9rem;">TOP面工时</span>
-                    </div>
-                    <div style="text-align: right;">
-                        <span style="color: #666;">点位数</span>
-                        <div style="font-size: 1.2rem; font-weight: 600;">{top_points}</div>
-                        <span style="color: #888; font-size: 0.8rem;">R²={result.get('r2', 0):.3f}</span>
-                    </div>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-        else:
-            st.markdown(f"""
-            <div style="background: linear-gradient(135deg, #e3f2fd, #bbdefb); 
-                        padding: 1rem; border-radius: 10px; border-left: 4px solid #1565c0;">
-                <div style="display: flex; justify-content: space-between; flex-wrap: wrap;">
-                    <div>
-                        <span style="color: #555;">📌 双面板</span>
-                        <div style="font-size: 1.8rem; font-weight: 700; color: #1565c0;">
-                            {result['total_time']:.1f}s
-                        </div>
-                        <span style="color: #666; font-size: 0.9rem;">总工时</span>
-                    </div>
-                    <div>
-                        <span style="color: #666;">TOP面</span>
-                        <div style="font-size: 1.1rem;">{result['top_time']:.1f}s</div>
-                        <span style="color: #888; font-size: 0.8rem;">{top_points}点</span>
-                    </div>
-                    <div>
-                        <span style="color: #666;">BOT面</span>
-                        <div style="font-size: 1.1rem;">{result['bot_time']:.1f}s</div>
-                        <span style="color: #888; font-size: 0.8rem;">{bot_points}点</span>
-                    </div>
-                    <div style="text-align: right;">
-                        <span style="color: #888; font-size: 0.8rem;">R²={result.get('r2', 0):.3f}</span>
-                    </div>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-
-    st.markdown("---")
     st.markdown("### 💬 AI分析")
+    st.caption("输入点位数或提问，AI帮你分析")
     
-    chat_container = st.container(height=200)
+    chat_container = st.container(height=480)
     with chat_container:
-        for msg in st.session_state.messages[-10:]:
+        for msg in st.session_state.messages[-20:]:
             if msg["role"] == "user":
                 st.chat_message("user").write(msg["content"])
             elif msg["role"] == "assistant":
                 st.chat_message("assistant").write(msg["content"])
     
-    user_input = st.chat_input("提问...")
+    user_input = st.chat_input("输入点位数（如 100）或提问...")
     if user_input:
         st.session_state.messages.append({"role": "user", "content": user_input})
         
