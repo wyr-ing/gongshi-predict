@@ -205,7 +205,7 @@ def calculate_theory_time(point_count, a=0.5, b=2.0):
     return a * point_count + b
 
 # ============================================================
-# 对比图
+# 对比图（图例和标题使用英文）
 # ============================================================
 def plot_chart(df, model, poly, mape, point_count=None, predicted_time=None, line_type="SMT"):
     
@@ -216,7 +216,7 @@ def plot_chart(df, model, poly, mape, point_count=None, predicted_time=None, lin
     
     if len(X) == 0:
         fig, ax = plt.subplots(figsize=(screen['fig_width'], screen['fig_height']), dpi=100)
-        ax.text(0.5, 0.5, '暂无数据', ha='center', va='center', fontsize=20)
+        ax.text(0.5, 0.5, 'No Data Available', ha='center', va='center', fontsize=20)
         return fig
     
     x_min_plot = max(0, X.min() - 50)
@@ -232,15 +232,15 @@ def plot_chart(df, model, poly, mape, point_count=None, predicted_time=None, lin
 
     # 数据点
     ax.scatter(X, y, color='#1f77b4', s=screen['marker_size'], alpha=0.7, 
-               label='实际数据', zorder=3)
+               label='Actual Data', zorder=3)
     
     # 预测曲线
     ax.plot(X_smooth, y_pred_smooth, color='#d62728', linewidth=2.5, 
-            label='预测曲线', zorder=2)
+            label='Prediction Curve', zorder=2)
     
     # 理论直线
     ax.plot(X_smooth, y_theory, color='#2ca02c', linewidth=2, linestyle='--', 
-            label='理论工时', zorder=2)
+            label='Theory Line', zorder=2)
     
     # 误差带
     mape_val = mape if mape is not None else 17.0
@@ -248,24 +248,24 @@ def plot_chart(df, model, poly, mape, point_count=None, predicted_time=None, lin
     y_lower = y_pred_smooth * (1 - mape_val / 100)
     ax.fill_between(X_smooth.flatten(), y_lower, y_upper, 
                     color='#d62728', alpha=0.10, 
-                    label=f'±{mape_val:.1f}% 误差带')
+                    label=f'±{mape_val:.1f}% Error Band')
 
     # 预测点标记
     if point_count is not None and predicted_time is not None:
         ax.scatter([point_count], [predicted_time], color='#ff6b6b', 
                    s=screen['marker_size'] * 3.5,
                    edgecolors='white', linewidth=2, zorder=6, 
-                   label=f'预测: {point_count}点 → {predicted_time:.1f}s')
+                   label=f'Prediction: {point_count} pts → {predicted_time:.1f}s')
         ax.axvline(x=point_count, color='#ff6b6b', linestyle=':', alpha=0.6, linewidth=1.2)
         ax.axhline(y=predicted_time, color='#ff6b6b', linestyle=':', alpha=0.6, linewidth=1.2)
 
     ax.legend(loc='upper left', fontsize=screen['legend_size'], 
               framealpha=0.92, edgecolor='#ccc')
     
-    ax.set_xlabel('点位数', fontsize=screen['font_size'], fontweight='bold')
-    ax.set_ylabel('工时 (秒)', fontsize=screen['font_size'], fontweight='bold')
+    ax.set_xlabel('Point Count', fontsize=screen['font_size'], fontweight='bold')
+    ax.set_ylabel('Time (seconds)', fontsize=screen['font_size'], fontweight='bold')
     
-    title = f'📊 {line_type} 工时预测图'
+    title = f'📊 {line_type} Manhour Prediction Chart'
     ax.set_title(title, fontsize=screen['title_size'], fontweight='bold', pad=15)
     
     ax.grid(True, alpha=0.25, linestyle='--')
