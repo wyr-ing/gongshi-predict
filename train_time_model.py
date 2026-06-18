@@ -183,7 +183,7 @@ def predict_time(board_type, top_points, bot_points=0, models=None):
     return None
 
 # ============================================================
-# 绘图
+# 绘图（图例和标题使用英文）
 # ============================================================
 def plot_chart(models, board_type=None, top_points=None, bot_points=None, 
                predicted=None, line_type="SMT"):
@@ -193,52 +193,51 @@ def plot_chart(models, board_type=None, top_points=None, bot_points=None,
     fig, ax = plt.subplots(figsize=(screen['fig_width'], screen['fig_height']), dpi=100)
     
     colors = {'单面': '#1f77b4', '双面': '#d62728'}
-    labels = {'单面': 'Single Side', '双面': 'Double Side'}
     
-    # 绘制数据点
     for model_name, model_info in models.items():
         if model_name == 'single':
-            label = '单面数据'
             df = model_info['data']
             x = df['TOP单板点数']
             y = df['TOP标准工时']
-            ax.scatter(x, y, color=colors['单面'], s=screen['marker_size'], alpha=0.6, label=label)
+            ax.scatter(x, y, color=colors['单面'], s=screen['marker_size'], alpha=0.6, 
+                      label='Single Side Data')
             
-            # 绘制预测曲线
-            x_smooth = np.linspace(x.min() - 10, x.max() + 10, 100).reshape(-1, 1)
-            x_poly = model_info['poly'].transform(x_smooth)
-            y_smooth = model_info['model'].predict(x_poly)
-            ax.plot(x_smooth, y_smooth, color=colors['单面'], linewidth=2, 
-                   label=f'单面拟合 (R²={model_info["r2"]:.3f})')
+            if len(x) > 1:
+                x_smooth = np.linspace(x.min() - 10, x.max() + 10, 100).reshape(-1, 1)
+                x_poly = model_info['poly'].transform(x_smooth)
+                y_smooth = model_info['model'].predict(x_poly)
+                ax.plot(x_smooth, y_smooth, color=colors['单面'], linewidth=2, 
+                       label=f'Single Fit (R²={model_info["r2"]:.3f})')
         
         elif model_name == 'double':
-            label = '双面数据'
             df = model_info['data']
             x = df['总点数']
             y = df['总工时']
-            ax.scatter(x, y, color=colors['双面'], s=screen['marker_size'], alpha=0.6, label=label)
+            ax.scatter(x, y, color=colors['双面'], s=screen['marker_size'], alpha=0.6, 
+                      label='Double Side Data')
             
-            x_smooth = np.linspace(x.min() - 20, x.max() + 20, 100).reshape(-1, 1)
-            x_poly = model_info['poly'].transform(x_smooth)
-            y_smooth = model_info['model'].predict(x_poly)
-            ax.plot(x_smooth, y_smooth, color=colors['双面'], linewidth=2, 
-                   label=f'双面拟合 (R²={model_info["r2"]:.3f})')
+            if len(x) > 1:
+                x_smooth = np.linspace(x.min() - 20, x.max() + 20, 100).reshape(-1, 1)
+                x_poly = model_info['poly'].transform(x_smooth)
+                y_smooth = model_info['model'].predict(x_poly)
+                ax.plot(x_smooth, y_smooth, color=colors['双面'], linewidth=2, 
+                       label=f'Double Fit (R²={model_info["r2"]:.3f})')
     
-    # 预测点
     if predicted is not None and top_points is not None:
         if board_type == '单面':
             ax.scatter([top_points], [predicted['total_time']], color='#ff6b6b', 
                       s=screen['marker_size'] * 3, edgecolors='white', linewidth=2, zorder=6,
-                      label=f'预测: {top_points}点 → {predicted["total_time"]:.1f}s')
+                      label=f'Prediction: {top_points}pts → {predicted["total_time"]:.1f}s')
         elif board_type == '双面' and bot_points is not None:
             total = top_points + bot_points
             ax.scatter([total], [predicted['total_time']], color='#ff6b6b', 
                       s=screen['marker_size'] * 3, edgecolors='white', linewidth=2, zorder=6,
-                      label=f'预测: {top_points}+{bot_points}点 → {predicted["total_time"]:.1f}s')
+                      label=f'Prediction: {top_points}+{bot_points}pts → {predicted["total_time"]:.1f}s')
     
     ax.set_xlabel('点数', fontsize=screen['font_size'], fontweight='bold')
     ax.set_ylabel('工时 (秒)', fontsize=screen['font_size'], fontweight='bold')
-    ax.set_title(f'📊 {line_type} 工时预测', fontsize=screen['title_size'], fontweight='bold')
+    ax.set_title(f'📊 {line_type} Manhour Prediction Chart', 
+                 fontsize=screen['title_size'], fontweight='bold', pad=15)
     ax.legend(loc='upper left', fontsize=screen['legend_size'])
     ax.grid(True, alpha=0.25)
     
@@ -374,7 +373,6 @@ with st.sidebar:
             required = ['物料编码', '单面/双面', 'TOP单板点数', 'BOT单板点数', 'TOP标准工时', 'BOT标准工时']
             missing = [c for c in required if c not in df_raw.columns]
             if not missing:
-                # 清理数据
                 df_raw = df_raw.dropna(subset=['物料编码', '单面/双面'])
                 df_raw['TOP单板点数'] = df_raw['TOP单板点数'].fillna(0)
                 df_raw['BOT单板点数'] = df_raw['BOT单板点数'].fillna(0)
@@ -439,7 +437,7 @@ with left_col:
                     st.metric("双面 R²", "无数据")
         
         with st.container():
-            st.markdown("### 📈 预测图")
+            st.markdown("### 📈 对比图")
             plot_placeholder = st.empty()
             
             if st.session_state.last_prediction_result is not None:
@@ -466,7 +464,6 @@ with left_col:
 with right_col:
     st.markdown("### 🎯 SMT工时预测")
     
-    # 板类型选择
     board_type = st.radio(
         "选择板类型",
         ["单面", "双面"],
@@ -484,7 +481,6 @@ with right_col:
             st.markdown("**BOT面点数**")
             st.caption("单面板无需输入")
     
-    # 预测按钮
     if st.button("🚀 预测", use_container_width=True):
         if st.session_state.models is not None:
             result = predict_time(board_type, top_points, bot_points, st.session_state.models)
@@ -502,7 +498,6 @@ with right_col:
         else:
             st.error("请先上传数据")
     
-    # 显示预测结果
     if st.session_state.last_prediction_result is not None:
         result = st.session_state.last_prediction_result
         
@@ -570,7 +565,6 @@ with right_col:
     if user_input:
         st.session_state.messages.append({"role": "user", "content": user_input})
         
-        # 检查是否包含点数相关的内容
         numbers = re.findall(r'\d+', user_input)
         
         with st.spinner("分析中..."):
