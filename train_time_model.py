@@ -63,7 +63,6 @@ def load_smt_data():
     if os.path.exists(DATA_FILE_SMT):
         try:
             df = pd.read_excel(DATA_FILE_SMT)
-            # 只需要两列：单板点数 和 标准工时
             required_cols = ['单板点数', '标准工时']
             for col in required_cols:
                 if col not in df.columns:
@@ -82,7 +81,6 @@ def save_smt_data(df):
 def train_models(df):
     models = {}
     
-    # 过滤掉无效数据
     df_clean = df.dropna(subset=['单板点数', '标准工时'])
     df_clean = df_clean[(df_clean['单板点数'] > 0) & (df_clean['标准工时'] > 0)]
     
@@ -112,7 +110,6 @@ def train_models(df):
 # 预测函数
 # ============================================================
 def predict_time(points, models=None):
-    """预测工时"""
     if models is None or 'smt' not in models:
         return None
     
@@ -408,52 +405,55 @@ with right_col:
             """, unsafe_allow_html=True)
 
 # ============================================================
-# 第二行：AI分析
+# 第二行：AI分析（全宽，标题居中，对话框横向拉长）
 # ============================================================
 st.markdown("---")
-st.markdown("### 💬 AI分析")
 
-ai_container = st.container()
-
-with ai_container:
-    ai_left, ai_right = st.columns([1, 4])
+# 使用全宽容器
+with st.container():
+    # AI分析标题居中
+    st.markdown("<h3 style='text-align: center;'>💬 AI 分 析</h3>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: #888; font-size: 0.85rem;'>输入点数或提问，AI会先显示预测结果，再给出专业分析</p>", unsafe_allow_html=True)
     
-    with ai_right:
-        st.caption("输入点数或提问，AI会先显示预测结果，再给出专业分析")
-        
-        chat_container = st.container(height=300)
-        with chat_container:
-            for msg in st.session_state.messages[-20:]:
-                if msg["role"] == "user":
-                    st.chat_message("user").write(msg["content"])
-                elif msg["role"] == "assistant":
-                    st.chat_message("assistant").write(msg["content"])
-        
-        user_input = st.chat_input("输入点数（如 100）或提问...")
-        if user_input:
-            st.session_state.messages.append({"role": "user", "content": user_input})
-            
-            numbers = re.findall(r'\d+', user_input)
-            
-            with st.spinner("分析中..."):
-                if st.session_state.last_prediction_result is not None and numbers:
-                    response = chat_with_ai(user_input, st.session_state.last_prediction_result)
-                else:
-                    response = chat_with_ai(user_input, None)
-            
-            st.session_state.messages.append({"role": "assistant", "content": response})
+    # 对话框 - 使用全宽
+    chat_container = st.container(height=350)
+    with chat_container:
+        for msg in st.session_state.messages[-20:]:
+            if msg["role"] == "user":
+                st.chat_message("user").write(msg["content"])
+            elif msg["role"] == "assistant":
+                st.chat_message("assistant").write(msg["content"])
+    
+    # 输入框和按钮行
+    col_input, col_btn1, col_btn2 = st.columns([6, 1, 1])
+    
+    with col_input:
+        user_input = st.chat_input("输入点数（如 100）或提问...", key="ai_chat_input")
+    
+    with col_btn1:
+        if st.button("🗑️ 清空对话", use_container_width=True, key="clear_chat_btn"):
+            st.session_state.messages = []
             st.rerun()
+    
+    with col_btn2:
+        with st.expander("📊 预测历史"):
+            if st.session_state.prediction_history:
+                for h in st.session_state.prediction_history[-20:]:
+                    st.write(f"- {h}")
+            else:
+                st.write("暂无预测记录")
+    
+    # 处理用户输入
+    if user_input:
+        st.session_state.messages.append({"role": "user", "content": user_input})
         
-        btn_col1, btn_col2, btn_col3 = st.columns([1, 1, 4])
-        with btn_col1:
-            if st.button("🗑️ 清空对话", use_container_width=True):
-                st.session_state.messages = []
-                st.rerun()
+        numbers = re.findall(r'\d+', user_input)
         
-        with btn_col2:
-            with st.expander("📊 预测历史"):
-                if st.session_state.prediction_history:
-                    for h in st.session_state.prediction_history[-20:]:
-                        st.write(f"- {h}")
-                else:
-                    st.write("暂无预测记录")
+        with st.spinner("分析中..."):
+            if st.session_state.last_prediction_result is not None and numbers:
+                response = chat_with_ai(user_input, st.session_state.last_prediction_result)
+            else:
+                response = chat_with_ai(user_input, None)
+        
+        st.session_state.messages.append({"role": "assistant", "content": response})
+        st.rerun()
