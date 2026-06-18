@@ -2,15 +2,12 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import requests
-import re
-import os
-import json
-import hashlib
-from datetime import datetime
-from sklearn.linear_model import LinearRegression
+import seaborn as sns
+from sklearn.linear_model import LinearRegression, RANSACRegressor
 from sklearn.preprocessing import PolynomialFeatures
+from sklearn.pipeline import make_pipeline
 from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
+from scipy import stats
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -18,8 +15,8 @@ warnings.filterwarnings('ignore')
 # 页面配置
 # ============================================================
 st.set_page_config(
-    page_title="工时预测系统 - SMT/DIP",
-    page_icon="⚙️",
+    page_title="工时预测系统 - 方案一",
+    page_icon="📊",
     layout="wide"
 )
 
@@ -36,59 +33,7 @@ BASE_URL = "https://api.siliconflow.cn/v1"
 HISTORY_FILE = "prediction_history.json"
 
 # ============================================================
-# 屏幕自适应工具函数
-# ============================================================
-def get_screen_size():
-    try:
-        screen_width = st.session_state.get('screen_width', 1200)
-    except:
-        screen_width = 1200
-    
-    if screen_width < 768:
-        fig_width = 6
-        fig_height = 4.5
-        font_size = 8
-        title_size = 10
-        legend_size = 7
-        marker_size = 30
-        tick_size = 7
-    elif screen_width < 1024:
-        fig_width = 8
-        fig_height = 5.5
-        font_size = 9
-        title_size = 12
-        legend_size = 8
-        marker_size = 40
-        tick_size = 8
-    elif screen_width < 1366:
-        fig_width = 10
-        fig_height = 6
-        font_size = 10
-        title_size = 13
-        legend_size = 9
-        marker_size = 45
-        tick_size = 9
-    else:
-        fig_width = 12
-        fig_height = 6.5
-        font_size = 11
-        title_size = 14
-        legend_size = 9.5
-        marker_size = 55
-        tick_size = 10
-    
-    return {
-        'fig_width': fig_width,
-        'fig_height': fig_height,
-        'font_size': font_size,
-        'title_size': title_size,
-        'legend_size': legend_size,
-        'marker_size': marker_size,
-        'tick_size': tick_size
-    }
-
-# ============================================================
-# 列名映射（增强版 - 支持"元件总数"）
+# 列名映射
 # ============================================================
 def get_column_mapping(df):
     columns = df.columns.tolist()
@@ -114,39 +59,10 @@ def get_column_mapping(df):
         if actual_col is not None:
             break
     
-    theory_col = None
-    theory_keywords = ['理论工时/s', '理论工时', '标准工时', '理论时间']
-    for keyword in theory_keywords:
-        for col in columns:
-            if keyword in col:
-                theory_col = col
-                break
-        if theory_col is not None:
-            break
-    
-    return point_col, actual_col, theory_col
+    return point_col, actual_col
 
 # ============================================================
-# 预测历史保存/加载
-# ============================================================
-def save_history(history):
-    try:
-        with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
-            json.dump(history, f, ensure_ascii=False, indent=2)
-    except:
-        pass
-
-def load_history():
-    if os.path.exists(HISTORY_FILE):
-        try:
-            with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except:
-            return []
-    return []
-
-# ============================================================
-# 数据保存/加载（支持SMT和DIP）
+# 数据加载
 # ============================================================
 def get_data_file(line_type):
     if line_type == "SMT":
@@ -154,248 +70,283 @@ def get_data_file(line_type):
     else:
         return DATA_FILE_DIP
 
-def save_data(df, line_type):
-    data_file = get_data_file(line_type)
-    df.to_excel(data_file, index=False)
-
 def load_saved_data(line_type):
     data_file = get_data_file(line_type)
     if os.path.exists(data_file):
         try:
             df = pd.read_excel(data_file)
-            point_col, actual_col, theory_col = get_column_mapping(df)
+            point_col, actual_col = get_column_mapping(df)
             if point_col is not None and actual_col is not None:
                 df_clean = df[[point_col, actual_col]].copy()
                 df_clean.columns = ['点位数', '实际工时']
                 df_clean = df_clean.dropna()
                 df_clean = df_clean[df_clean['点位数'] > 0]
+                df_clean = df_clean[df_clean['实际工时'] > 0]
                 return df_clean
         except Exception as e:
-            print(f"加载{line_type}数据失败: {e}")
             return None
     return None
 
 # ============================================================
-# 训练预测模型
+# 数据探索分析
 # ============================================================
-def train_prediction_model(df):
-    if len(df) < 2:
-        return None, None, None, None, None, None, None
+def data_exploration(df):
+    """生成数据探索报告"""
+    report = {}
     
-    X = df[['点位数']].values
-    y = df['实际工时'].values
+    # 基本统计
+    report['总数据量'] = len(df)
+    report['点位范围'] = (df['点位数'].min(), df['点位数'].max())
+    report['工时范围'] = (df['实际工时'].min(), df['实际工时'].max())
     
-    poly = PolynomialFeatures(degree=2)
-    X_poly = poly.fit_transform(X)
-    model = LinearRegression()
-    model.fit(X_poly, y)
-    y_pred = model.predict(X_poly)
+    # 按点位分组统计
+    grouped = df.groupby('点位数').agg({
+        '实际工时': ['count', 'mean', 'std', 'min', 'max', lambda x: x.quantile(0.25), lambda x: x.quantile(0.75)]
+    }).reset_index()
+    grouped.columns = ['点位数', '样本数', '均值', '标准差', '最小值', '最大值', 'Q1', 'Q3']
+    grouped['变异系数'] = grouped['标准差'] / grouped['均值']  # CV > 1 表示离散度很大
     
-    residuals = y - y_pred
+    report['分组统计'] = grouped
     
-    r2 = r2_score(y, y_pred)
-    mae = mean_absolute_error(y, y_pred)
-    mape = np.mean(np.abs((y - y_pred) / y)) * 100
+    # 识别高离散点位
+    high_cv = grouped[grouped['变异系数'] > 0.5]
+    report['高离散点位'] = len(high_cv)
+    report['高离散点位详情'] = high_cv.sort_values('变异系数', ascending=False).head(20)
     
-    return model, poly, r2, mae, mape, residuals, y_pred
+    # 样本量分布
+    sample_counts = grouped['样本数'].value_counts().sort_index()
+    report['点位样本量分布'] = sample_counts
+    
+    return report
 
 # ============================================================
-# 理论工时计算（修正系数，使曲线更合理）
+# 数据清洗（按点位分组剔除异常值）
 # ============================================================
-def calculate_theory_time(point_count, a=0.5, b=2.0):
+def clean_data_by_group(df, sigma=3.0):
+    """按点位分组，剔除超出均值±n*标准差的数据"""
+    clean_list = []
+    outlier_list = []
+    
+    for point in df['点位数'].unique():
+        group = df[df['点位数'] == point]
+        
+        if len(group) < 3:
+            # 样本太少，全部保留
+            clean_list.append(group)
+            continue
+        
+        mean_val = group['实际工时'].mean()
+        std_val = group['实际工时'].std()
+        
+        if std_val == 0:
+            clean_list.append(group)
+            continue
+        
+        lower = mean_val - sigma * std_val
+        upper = mean_val + sigma * std_val
+        
+        clean = group[(group['实际工时'] >= lower) & (group['实际工时'] <= upper)]
+        outliers = group[(group['实际工时'] < lower) | (group['实际工时'] > upper)]
+        
+        clean_list.append(clean)
+        if len(outliers) > 0:
+            outlier_list.append(outliers)
+    
+    clean_df = pd.concat(clean_list, ignore_index=True) if clean_list else df
+    outlier_df = pd.concat(outlier_list, ignore_index=True) if outlier_list else pd.DataFrame()
+    
+    return clean_df, outlier_df
+
+# ============================================================
+# 分段建模
+# ============================================================
+def segment_model(df):
     """
-    理论工时计算：a * point_count + b
-    默认参数 a=0.5, b=2.0 使得理论线有明显斜率
+    按点位区间分段建模：
+    - 小点位 (1-50): 线性回归
+    - 中点位 (51-150): 二次多项式
+    - 大点位 (151+): RANSAC 稳健回归
     """
-    return a * point_count + b
-
-# ============================================================
-# 对比图（自适应版）
-# ============================================================
-def plot_chart(df, model, poly, mape, point_count=None, predicted_time=None, line_type="SMT"):
+    models = {}
+    segments = {}
     
-    screen = get_screen_size()
+    # 定义分段区间
+    segments_config = [
+        ('small', 1, 50, '线性回归', LinearRegression()),
+        ('medium', 51, 150, '二次多项式', make_pipeline(PolynomialFeatures(2), LinearRegression())),
+        ('large', 151, float('inf'), 'RANSAC', RANSACRegressor(random_state=42))
+    ]
     
-    X = df[['点位数']].values
-    y = df['实际工时'].values
+    for name, low, high, method, model in segments_config:
+        segment_data = df[(df['点位数'] >= low) & (df['点位数'] <= high)]
+        
+        if len(segment_data) < 3:
+            continue
+        
+        X = segment_data[['点位数']].values
+        y = segment_data['实际工时'].values
+        
+        model.fit(X, y)
+        y_pred = model.predict(X)
+        
+        r2 = r2_score(y, y_pred)
+        mae = mean_absolute_error(y, y_pred)
+        mape = np.mean(np.abs((y - y_pred) / y)) * 100
+        
+        models[name] = {
+            'model': model,
+            'data': segment_data,
+            'method': method,
+            'r2': r2,
+            'mae': mae,
+            'mape': mape,
+            'range': f'{low}-{high}点',
+            'sample_count': len(segment_data)
+        }
+        
+        segments[name] = segment_data
     
-    if len(X) == 0:
-        fig, ax = plt.subplots(figsize=(screen['fig_width'], screen['fig_height']), dpi=100)
-        ax.text(0.5, 0.5, '暂无数据', ha='center', va='center', fontsize=20)
-        return fig
-    
-    x_min_plot = max(0, X.min() - 50)
-    x_max_plot = X.max() + 50
-    X_smooth = np.linspace(x_min_plot, x_max_plot, 300).reshape(-1, 1)
-    
-    X_smooth_poly = poly.transform(X_smooth)
-    y_pred_smooth = model.predict(X_smooth_poly)
-    y_theory = calculate_theory_time(X_smooth.flatten())
-
-    fig, ax = plt.subplots(figsize=(screen['fig_width'], screen['fig_height']), dpi=100)
-    fig.subplots_adjust(left=0.08, right=0.95, top=0.92, bottom=0.12)
-
-    # 数据点
-    ax.scatter(X, y, color='#1f77b4', s=screen['marker_size'], alpha=0.7, 
-               label='实际数据', zorder=3)
-    
-    # 预测曲线
-    ax.plot(X_smooth, y_pred_smooth, color='#d62728', linewidth=2.5, 
-            label='预测曲线', zorder=2)
-    
-    # 理论直线 - 使用修正后的参数
-    ax.plot(X_smooth, y_theory, color='#2ca02c', linewidth=2, linestyle='--', 
-            label='理论工时 (a=0.5, b=2.0)', zorder=2)
-    
-    # 误差带
-    mape_val = mape if mape is not None else 17.0
-    y_upper = y_pred_smooth * (1 + mape_val / 100)
-    y_lower = y_pred_smooth * (1 - mape_val / 100)
-    ax.fill_between(X_smooth.flatten(), y_lower, y_upper, 
-                    color='#d62728', alpha=0.10, 
-                    label=f'±{mape_val:.1f}% 误差带')
-
-    # 预测点标记
-    if point_count is not None and predicted_time is not None:
-        ax.scatter([point_count], [predicted_time], color='#ff6b6b', 
-                   s=screen['marker_size'] * 3.5,
-                   edgecolors='white', linewidth=2, zorder=6, 
-                   label=f'预测: {point_count}点 → {predicted_time:.1f}s')
-        ax.axvline(x=point_count, color='#ff6b6b', linestyle=':', alpha=0.6, linewidth=1.2)
-        ax.axhline(y=predicted_time, color='#ff6b6b', linestyle=':', alpha=0.6, linewidth=1.2)
-
-    ax.legend(loc='upper left', fontsize=screen['legend_size'], 
-              framealpha=0.92, edgecolor='#ccc')
-    
-    ax.set_xlabel('点位数', fontsize=screen['font_size'], fontweight='bold')
-    ax.set_ylabel('工时 (秒)', fontsize=screen['font_size'], fontweight='bold')
-    
-    # 标题
-    title = f'📊 {line_type} 工时预测图'
-    ax.set_title(title, fontsize=screen['title_size'], fontweight='bold', pad=15)
-    
-    ax.grid(True, alpha=0.25, linestyle='--')
-    
-    # 坐标轴范围
-    x_max = X.max() * 1.15
-    y_max = max(y.max(), y_theory.max(), y_pred_smooth.max()) * 1.2
-    
-    ax.set_xlim(0, x_max)
-    ax.set_ylim(0, max(y_max, 10))
-    
-    # 智能刻度设置
-    if x_max <= 100:
-        x_step = 10
-    elif x_max <= 200:
-        x_step = 20
-    elif x_max <= 500:
-        x_step = 50
-    elif x_max <= 1000:
-        x_step = 100
-    else:
-        x_step = 200
-    
-    x_ticks = np.arange(0, x_max + x_step, x_step)
-    ax.set_xticks(x_ticks)
-    
-    if y_max <= 50:
-        y_step = 10
-    elif y_max <= 100:
-        y_step = 20
-    elif y_max <= 500:
-        y_step = 50
-    elif y_max <= 1000:
-        y_step = 100
-    else:
-        y_step = 200
-    
-    y_max_rounded = int(np.ceil(y_max / y_step)) * y_step
-    y_ticks = np.arange(0, y_max_rounded + y_step, y_step)
-    ax.set_yticks(y_ticks)
-    
-    plt.setp(ax.get_xticklabels(), rotation=45, ha='right')
-    ax.tick_params(axis='both', labelsize=screen['tick_size'])
-
-    plt.tight_layout()
-    return fig
+    return models, segments
 
 # ============================================================
 # 预测函数
 # ============================================================
-def predict_time(point_count, line_type):
-    state_key = f"model_trained_{line_type}"
-    if st.session_state.get(state_key, False) and st.session_state.get(f"model_{line_type}") is not None:
-        X_input = np.array([[point_count]])
-        X_input_poly = st.session_state.get(f"poly_{line_type}").transform(X_input)
-        predicted = st.session_state.get(f"model_{line_type}").predict(X_input_poly)[0]
-        # 使用修正后的理论工时计算
-        theory = calculate_theory_time(point_count)
-        deviation_pct = (predicted - theory) / theory * 100
-        return {
-            "predicted": predicted,
-            "theory": theory,
-            "deviation_pct": deviation_pct,
-            "mape": st.session_state.get(f"mape_{line_type}", 17.0),
-            "r2": st.session_state.get(f"r2_{line_type}"),
-            "mae": st.session_state.get(f"mae_{line_type}")
-        }
-    return None
-
-# ============================================================
-# AI对话
-# ============================================================
-def chat_with_ai(user_message, prediction_result=None, line_type="SMT"):
-    headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
-
-    if prediction_result:
-        p = prediction_result['predicted']
-        dev = prediction_result['deviation_pct']
-        theory = prediction_result['theory']
-        point_count = prediction_result['point_count']
-        mape_val = prediction_result['mape']
-
-        if abs(dev) <= mape_val:
-            status = "在正常范围内"
-        else:
-            status = "超出正常范围"
-
-        system_prompt = f"""你是{line_type}产线工时预测数据分析专家，有丰富的产线经验。
-
-用户输入点位数 {point_count}，模型预测工时 {p:.2f} 秒。
-理论标准工时 {theory:.2f} 秒，偏差 {dev:+.1f}%，{status}（正常误差范围 ±{mape_val:.1f}%）。
-
-请严格按以下格式输出：
-1.模型预测工时 {p:.2f} 秒。
-2.理论标准工时 {theory:.2f} 秒，
-3.偏差 {dev:+.1f}%，{status}。
-4.然后简要分析原因。"""
-
-        user_message = f"用户输入点位数{point_count}，请分析预测结果。"
+def predict_by_segment(point_count, models):
+    """根据点位选择对应模型进行预测"""
+    if point_count <= 50 and 'small' in models:
+        model_info = models['small']
+        X = np.array([[point_count]])
+        pred = model_info['model'].predict(X)[0]
+        return pred, model_info['method'], model_info['range']
+    elif point_count <= 150 and 'medium' in models:
+        model_info = models['medium']
+        X = np.array([[point_count]])
+        pred = model_info['model'].predict(X)[0]
+        return pred, model_info['method'], model_info['range']
+    elif 'large' in models:
+        model_info = models['large']
+        X = np.array([[point_count]])
+        pred = model_info['model'].predict(X)[0]
+        return pred, model_info['method'], model_info['range']
     else:
-        system_prompt = f"你是{line_type}产线工时预测数据分析专家。请提示用户输入具体点位数，以便进行预测分析。"
+        return None, None, None
 
-    messages = [{"role": "system", "content": system_prompt}]
-    for msg in st.session_state.messages[-10:]:
-        messages.append(msg)
-    messages.append({"role": "user", "content": user_message})
-
-    payload = {
-        "model": "deepseek-ai/DeepSeek-V3",
-        "messages": messages,
-        "temperature": 0.7,
-        "max_tokens": 2000
+# ============================================================
+# 绘图函数
+# ============================================================
+def plot_segment_chart(df, models, clean_df=None, outlier_df=None, 
+                       point_count=None, predicted_time=None, line_type="SMT"):
+    
+    screen = {
+        'fig_width': 12,
+        'fig_height': 6.5,
+        'marker_size': 45,
+        'font_size': 11,
+        'title_size': 14,
+        'legend_size': 9.5
     }
+    
+    fig, ax = plt.subplots(figsize=(screen['fig_width'], screen['fig_height']), dpi=100)
+    
+    # 原始数据（浅色）
+    ax.scatter(df['点位数'], df['实际工时'], color='#cccccc', s=screen['marker_size']*0.3, 
+               alpha=0.3, label='原始数据', zorder=1)
+    
+    # 清洗后数据（深色）
+    if clean_df is not None and len(clean_df) > 0:
+        ax.scatter(clean_df['点位数'], clean_df['实际工时'], color='#1f77b4', 
+                   s=screen['marker_size']*0.7, alpha=0.6, label='清洗后数据', zorder=3)
+    
+    # 异常值（红色）
+    if outlier_df is not None and len(outlier_df) > 0:
+        ax.scatter(outlier_df['点位数'], outlier_df['实际工时'], color='red', 
+                   s=screen['marker_size'], alpha=0.5, marker='x', 
+                   label=f'异常值 ({len(outlier_df)}个)', zorder=4)
+    
+    # 绘制各段的预测曲线
+    colors = {'small': '#2ca02c', 'medium': '#d62728', 'large': '#9467bd'}
+    labels = {'small': '小点位 (1-50点) - 线性', 
+              'medium': '中点位 (51-150点) - 二次', 
+              'large': '大点位 (151+点) - RANSAC'}
+    
+    for name, info in models.items():
+        if info['model'] is None:
+            continue
+        
+        data = info['data']
+        if len(data) < 2:
+            continue
+        
+        X_min = data['点位数'].min()
+        X_max = data['点位数'].max()
+        
+        if X_max == X_min:
+            continue
+        
+        X_smooth = np.linspace(X_min - 5, X_max + 5, 100).reshape(-1, 1)
+        y_smooth = info['model'].predict(X_smooth)
+        
+        ax.plot(X_smooth, y_smooth, color=colors.get(name, '#333'), 
+                linewidth=2.5, label=labels.get(name, name), zorder=5)
+        
+        # 标注模型性能
+        mid_x = (X_min + X_max) / 2
+        mid_y = info['model'].predict(np.array([[mid_x]]))[0]
+        ax.text(mid_x, mid_y * 1.1, f'R²={info["r2"]:.3f}', 
+                fontsize=8, color=colors.get(name, '#333'), ha='center')
+    
+    # 预测点
+    if point_count is not None and predicted_time is not None:
+        ax.scatter([point_count], [predicted_time], color='#ff6b6b', 
+                   s=screen['marker_size'] * 2.5,
+                   edgecolors='white', linewidth=2, zorder=6,
+                   label=f'预测: {point_count}点 → {predicted_time:.1f}s')
+        ax.axvline(x=point_count, color='#ff6b6b', linestyle=':', alpha=0.6)
+        ax.axhline(y=predicted_time, color='#ff6b6b', linestyle=':', alpha=0.6)
+    
+    ax.set_xlabel('点位数', fontsize=screen['font_size'], fontweight='bold')
+    ax.set_ylabel('工时 (秒)', fontsize=screen['font_size'], fontweight='bold')
+    ax.set_title(f'📊 {line_type} 分段建模预测图', fontsize=screen['title_size'], fontweight='bold')
+    ax.legend(loc='upper left', fontsize=screen['legend_size'])
+    ax.grid(True, alpha=0.25)
+    
+    # 坐标轴范围
+    x_max = df['点位数'].max() * 1.1
+    y_max = df['实际工时'].max() * 1.2
+    ax.set_xlim(0, x_max)
+    ax.set_ylim(0, max(y_max, 10))
+    
+    plt.tight_layout()
+    return fig
 
-    try:
-        response = requests.post(f"{BASE_URL}/chat/completions", json=payload, headers=headers, timeout=60)
-        if response.status_code == 200:
-            return response.json()["choices"][0]["message"]["content"]
-        return f"API错误：{response.status_code}"
-    except Exception as e:
-        return f"连接失败：{str(e)}"
-
-def hash_password(password):
-    return hashlib.sha256(password.encode()).hexdigest()
+# ============================================================
+# 数据探索可视化
+# ============================================================
+def plot_exploration(df, grouped):
+    screen = {'fig_width': 12, 'fig_height': 5}
+    
+    fig, axes = plt.subplots(1, 2, figsize=(screen['fig_width'], screen['fig_height']))
+    
+    # 图1：点位样本量分布
+    sample_counts = grouped.groupby('点位数')['样本数'].first()
+    axes[0].bar(sample_counts.index, sample_counts.values, color='steelblue', alpha=0.7)
+    axes[0].set_xlabel('点位数')
+    axes[0].set_ylabel('样本数')
+    axes[0].set_title('各点位样本量分布')
+    axes[0].grid(True, alpha=0.3)
+    
+    # 图2：变异系数分布
+    cv_data = grouped[grouped['变异系数'] <= 2]['变异系数']  # 过滤极端值
+    axes[1].hist(cv_data, bins=30, color='coral', alpha=0.7, edgecolor='black')
+    axes[1].axvline(x=0.5, color='red', linestyle='--', label='CV=0.5 (高离散阈值)')
+    axes[1].set_xlabel('变异系数 (CV = 标准差/均值)')
+    axes[1].set_ylabel('点位数量')
+    axes[1].set_title('各点位工时变异系数分布')
+    axes[1].legend()
+    axes[1].grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    return fig
 
 # ============================================================
 # 初始化会话状态
@@ -404,338 +355,270 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 
 if "prediction_history" not in st.session_state:
-    loaded_history = load_history()
-    st.session_state.prediction_history = loaded_history if loaded_history else []
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
+                st.session_state.prediction_history = json.load(f)
+        except:
+            st.session_state.prediction_history = []
+    else:
+        st.session_state.prediction_history = []
 
-# 为SMT和DIP分别初始化状态
 for line_type in ["SMT", "DIP"]:
-    if f"model_trained_{line_type}" not in st.session_state:
-        st.session_state[f"model_trained_{line_type}"] = False
-        st.session_state[f"model_{line_type}"] = None
-        st.session_state[f"poly_{line_type}"] = None
-        st.session_state[f"mape_{line_type}"] = None
-        st.session_state[f"df_{line_type}"] = None
-        st.session_state[f"r2_{line_type}"] = None
-        st.session_state[f"mae_{line_type}"] = None
-        st.session_state[f"raw_df_{line_type}"] = None
+    if f"df_raw_{line_type}" not in st.session_state:
+        st.session_state[f"df_raw_{line_type}"] = None
+    if f"df_clean_{line_type}" not in st.session_state:
+        st.session_state[f"df_clean_{line_type}"] = None
+    if f"models_{line_type}" not in st.session_state:
+        st.session_state[f"models_{line_type}"] = None
+    if f"segments_{line_type}" not in st.session_state:
+        st.session_state[f"segments_{line_type}"] = None
+    if f"report_{line_type}" not in st.session_state:
+        st.session_state[f"report_{line_type}"] = None
 
-if "upload_authorized" not in st.session_state:
-    st.session_state.upload_authorized = False
+if "current_line_type" not in st.session_state:
+    st.session_state.current_line_type = "SMT"
 
 if "last_prediction" not in st.session_state:
     st.session_state.last_prediction = None
 if "last_prediction_result" not in st.session_state:
     st.session_state.last_prediction_result = None
-if "current_line_type" not in st.session_state:
-    st.session_state.current_line_type = "SMT"
-
-if "screen_width" not in st.session_state:
-    st.session_state.screen_width = 1200
 
 # ============================================================
-# 加载数据函数
+# 加载数据
 # ============================================================
-def load_data_for_line(line_type):
+for line_type in ["SMT", "DIP"]:
     saved_df = load_saved_data(line_type)
     if saved_df is not None and len(saved_df) > 0:
-        st.session_state[f"raw_df_{line_type}"] = saved_df.copy()
+        st.session_state[f"df_raw_{line_type}"] = saved_df
         
-        model, poly, r2, mae, mape, residuals, y_pred = train_prediction_model(saved_df)
+        # 数据探索
+        report = data_exploration(saved_df)
+        st.session_state[f"report_{line_type}"] = report
         
-        if model is not None:
-            st.session_state[f"model_trained_{line_type}"] = True
-            st.session_state[f"model_{line_type}"] = model
-            st.session_state[f"poly_{line_type}"] = poly
-            st.session_state[f"r2_{line_type}"] = r2
-            st.session_state[f"mae_{line_type}"] = mae
-            st.session_state[f"mape_{line_type}"] = mape
-            st.session_state[f"df_{line_type}"] = saved_df
-            return True
-    return False
-
-# 自动加载SMT和DIP数据
-for line_type in ["SMT", "DIP"]:
-    if not st.session_state.get(f"model_trained_{line_type}", False):
-        load_data_for_line(line_type)
+        # 数据清洗
+        clean_df, outlier_df = clean_data_by_group(saved_df, sigma=3.0)
+        
+        # 分段建模
+        models, segments = segment_model(clean_df)
+        
+        st.session_state[f"df_clean_{line_type}"] = clean_df
+        st.session_state[f"models_{line_type}"] = models
+        st.session_state[f"segments_{line_type}"] = segments
 
 # ============================================================
-# 侧边栏
+# 主界面
 # ============================================================
-with st.sidebar:
-    # 产线选择
-    st.markdown("### 🏭 产线选择")
+st.markdown("""
+<div style="text-align: center; padding: 0.5rem 0;">
+    <h1>📊 方案一：数据预处理 + 分组建模</h1>
+    <p style="color: #666;">按点位区间分段建模，自动剔除异常值</p>
+</div>
+<hr>
+""", unsafe_allow_html=True)
+
+# 产线选择
+col1, col2, col3 = st.columns([1, 2, 1])
+with col2:
     line_type = st.radio(
         "选择产线",
         ["SMT", "DIP"],
         index=0 if st.session_state.current_line_type == "SMT" else 1,
-        horizontal=True,
-        help="选择要查看和预测的产线"
+        horizontal=True
     )
-    
     if line_type != st.session_state.current_line_type:
         st.session_state.current_line_type = line_type
         st.rerun()
+
+# ============================================================
+# 数据探索报告
+# ============================================================
+report = st.session_state.get(f"report_{line_type}")
+df_raw = st.session_state.get(f"df_raw_{line_type}")
+df_clean = st.session_state.get(f"df_clean_{line_type}")
+models = st.session_state.get(f"models_{line_type}")
+
+if df_raw is not None and len(df_raw) > 0:
     
-    st.markdown("---")
+    # ============================================================
+    # 数据概览
+    # ============================================================
+    with st.expander("📋 数据概览", expanded=True):
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("原始数据量", len(df_raw))
+        with col2:
+            clean_count = len(df_clean) if df_clean is not None else 0
+            outlier_count = len(df_raw) - clean_count
+            st.metric("清洗后数据量", clean_count, delta=f"-{outlier_count} 异常值")
+        with col3:
+            point_range = f"{df_raw['点位数'].min():.0f} ~ {df_raw['点位数'].max():.0f}"
+            st.metric("点位范围", point_range)
+        with col4:
+            time_range = f"{df_raw['实际工时'].min():.1f} ~ {df_raw['实际工时'].max():.1f}"
+            st.metric("工时范围", time_range)
     
-    st.markdown("### ⚙️ 数据管理")
-    is_trained = st.session_state.get(f"model_trained_{line_type}", False)
-    df = st.session_state.get(f"df_{line_type}")
+    # ============================================================
+    # 数据质量分析
+    # ============================================================
+    with st.expander("📊 数据质量分析", expanded=True):
+        if report is not None:
+            grouped = report['分组统计']
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("**各点位样本量分布**")
+                sample_counts = grouped['点位数'].value_counts().sort_index()
+                sample_df = pd.DataFrame({
+                    '样本量': sample_counts.index,
+                    '点位数量': sample_counts.values
+                })
+                st.dataframe(sample_df, use_container_width=True, height=200)
+            
+            with col2:
+                st.markdown("**高离散点位 (CV > 0.5)**")
+                high_cv = report['高离散点位详情']
+                if len(high_cv) > 0:
+                    st.dataframe(high_cv[['点位数', '样本数', '均值', '标准差', '变异系数']], 
+                                 use_container_width=True, height=200)
+                else:
+                    st.success("✅ 所有点位变异系数均 ≤ 0.5，数据质量良好")
+            
+            # 变异系数分布图
+            st.markdown("**变异系数分布**")
+            fig = plot_exploration(df_raw, grouped)
+            st.pyplot(fig)
+            plt.close(fig)
     
-    if is_trained and df is not None:
-        st.success(f"✅ 当前数据：{len(df)} 行 ({line_type})")
+    # ============================================================
+    # 分段建模结果
+    # ============================================================
+    with st.expander("🎯 分段建模结果", expanded=True):
+        if models is not None and len(models) > 0:
+            col1, col2, col3 = st.columns(3)
+            
+            cols = [col1, col2, col3]
+            for idx, (name, info) in enumerate(models.items()):
+                with cols[idx % 3]:
+                    st.markdown(f"""
+                    <div style="background: #f8f9fa; padding: 0.8rem; border-radius: 8px; margin: 0.2rem 0;">
+                        <b>{info['method']}</b><br>
+                        <span style="color: #666; font-size: 0.85rem;">{info['range']}</span><br>
+                        样本数: {info['sample_count']}<br>
+                        R²: <b style="color: {'#2ecc71' if info['r2'] > 0.7 else '#f39c12' if info['r2'] > 0.4 else '#e74c3c'};">{info['r2']:.3f}</b><br>
+                        MAE: {info['mae']:.2f}s<br>
+                        MAPE: {info['mape']:.1f}%
+                    </div>
+                    """, unsafe_allow_html=True)
+    
+    # ============================================================
+    # 预测图表
+    # ============================================================
+    st.markdown("### 📈 分段建模预测图")
+    
+    # 获取异常值（原始数据中不在清洗后数据中的部分）
+    if df_clean is not None:
+        outlier_df = df_raw[~df_raw.index.isin(df_clean.index)]
     else:
-        st.warning(f"⚠️ 暂无{line_type}数据")
-
-    st.markdown("---")
+        outlier_df = pd.DataFrame()
     
-    st.markdown("#### 🔒 管理员验证")
-    admin_pwd = st.text_input("上传密码", type="password", key="admin_pwd")
-    if st.button("验证并上传", use_container_width=True):
-        if hash_password(admin_pwd) == hash_password("admin123"):
-            st.session_state.upload_authorized = True
-            st.success("验证成功，请上传数据")
-        else:
-            st.session_state.upload_authorized = False
-            st.error("密码错误")
+    fig = plot_segment_chart(
+        df_raw,
+        models,
+        clean_df=df_clean,
+        outlier_df=outlier_df if len(outlier_df) > 0 else None,
+        line_type=line_type
+    )
+    st.pyplot(fig)
+    plt.close(fig)
+    
+    # ============================================================
+    # 预测区域
+    # ============================================================
+    st.markdown("---")
+    st.markdown("### 🔮 工时预测")
+    
+    col1, col2 = st.columns([1, 2])
+    
+    with col1:
+        point_input = st.number_input(
+            "输入点位数",
+            min_value=1,
+            max_value=int(df_raw['点位数'].max() * 1.5),
+            value=50,
+            step=5
+        )
+        
+        if st.button("🚀 预测", use_container_width=True):
+            if models is not None:
+                pred, method, range_str = predict_by_segment(point_input, models)
+                if pred is not None:
+                    st.session_state.last_prediction = {
+                        "point_count": point_input,
+                        "predicted": pred
+                    }
+                    st.session_state.last_prediction_result = {
+                        "point_count": point_input,
+                        "predicted": pred,
+                        "method": method,
+                        "range": range_str
+                    }
+                    st.rerun()
+    
+    with col2:
+        if st.session_state.last_prediction_result is not None:
+            result = st.session_state.last_prediction_result
+            st.markdown(f"""
+            <div style="background: linear-gradient(135deg, #f0f4ff 0%, #e8eeff 100%); 
+                        padding: 1rem 1.5rem; 
+                        border-radius: 10px; 
+                        border-left: 4px solid #4a6cf7;">
+                <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap;">
+                    <div>
+                        <span style="font-size: 0.85rem; color: #888;">预测结果</span>
+                        <div style="font-size: 2rem; font-weight: 700; color: #1f77b4;">
+                            {result['predicted']:.1f} 秒
+                        </div>
+                    </div>
+                    <div style="text-align: right;">
+                        <span style="font-size: 0.85rem; color: #888;">点位数</span>
+                        <div style="font-size: 1.2rem; font-weight: 600;">{result['point_count']}</div>
+                    </div>
+                    <div style="text-align: right;">
+                        <span style="font-size: 0.85rem; color: #888;">模型</span>
+                        <div style="font-size: 0.9rem; font-weight: 600; color: #4a6cf7;">
+                            {result.get('method', 'Unknown')}
+                        </div>
+                    </div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
 
-    if st.session_state.upload_authorized:
-        st.markdown("---")
-        st.markdown(f"#### 📤 上传{line_type}数据")
-        st.caption("支持包含多列的Excel文件，自动识别'单板点数'、'元件总数'或'实际工时/s'列")
-        uploaded_file = st.file_uploader("选择Excel文件", type=["xlsx", "xls"], label_visibility="collapsed")
+else:
+    st.warning(f"⚠️ 暂无 {line_type} 数据，请先上传数据")
+    
+    # 上传区域
+    with st.expander("📤 上传数据", expanded=True):
+        uploaded_file = st.file_uploader("选择Excel文件", type=["xlsx", "xls"])
         if uploaded_file:
             df_raw = pd.read_excel(uploaded_file)
-            
-            point_col, actual_col, theory_col = get_column_mapping(df_raw)
+            point_col, actual_col = get_column_mapping(df_raw)
             
             if point_col is not None and actual_col is not None:
                 df = df_raw[[point_col, actual_col]].copy()
                 df.columns = ['点位数', '实际工时']
                 df = df.dropna()
                 df = df[df['点位数'] > 0]
+                df = df[df['实际工时'] > 0]
                 
                 if len(df) > 0:
-                    st.session_state[f"model_trained_{line_type}"] = False
+                    # 保存数据
                     save_data(df, line_type)
-                    
-                    st.success(f"✅ {line_type}数据已上传，共 {len(df)} 行")
-                    st.info(f"识别到列：'{point_col}' → 点位数，'{actual_col}' → 实际工时")
-                    st.balloons()
+                    st.success(f"✅ 数据已上传，共 {len(df)} 行")
                     st.rerun()
                 else:
-                    st.error("❌ 数据为空或点位数都小于等于0")
+                    st.error("❌ 数据为空或包含无效值")
             else:
-                st.error(f"❌ 未找到'单板点数'/'元件总数'或'实际工时/s'列，当前列名：{df_raw.columns.tolist()}")
-
-    st.markdown("---")
-    with st.expander("📋 示例数据格式"):
-        st.markdown("""
-        | 线别 | 单板点数/元件总数 | 实际工时/s | 理论工时/s |
-        |------|---------|-----------|-----------|
-        | L1 | 71 | 10.22 | 9.67 |
-        | L2 | 68 | 57.60 | 68.40 |
-        """)
-        st.caption("系统会自动识别'单板点数'、'元件总数'和'实际工时/s'列")
-
-    # 显示数据更新时间
-    data_file = get_data_file(line_type)
-    if os.path.exists(data_file):
-        mod_time = os.path.getmtime(data_file)
-        update_time = datetime.fromtimestamp(mod_time).strftime("%Y-%m-%d %H:%M")
-        st.markdown("---")
-        st.caption(f"📅 {line_type}数据更新：{update_time}")
-
-# ============================================================
-# 标题
-# ============================================================
-st.markdown(f"<h1 style='text-align: center;'>⚙️ {st.session_state.current_line_type} 工时预测系统</h1>", unsafe_allow_html=True)
-st.markdown("<hr style='margin: 0.5rem 0;'>", unsafe_allow_html=True)
-
-# ============================================================
-# 左右两栏
-# ============================================================
-left_col, right_col = st.columns(2, gap="large")
-
-# ============================================================
-# 左侧：模型评估 + 对比图
-# ============================================================
-with left_col:
-    is_trained = st.session_state.get(f"model_trained_{line_type}", False)
-    df = st.session_state.get(f"df_{line_type}")
-    
-    if is_trained and df is not None:
-        with st.container():
-            st.markdown("### 📊 模型评估")
-            
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                r2_val = st.session_state.get(f"r2_{line_type}")
-                st.metric("R²", f"{r2_val:.3f}" if r2_val is not None else "--")
-            with col2:
-                mae_val = st.session_state.get(f"mae_{line_type}")
-                st.metric("MAE", f"{mae_val:.2f}" if mae_val is not None else "--", help="平均绝对误差（秒）")
-            with col3:
-                mape_val = st.session_state.get(f"mape_{line_type}")
-                st.metric("MAPE", f"{mape_val:.1f}%" if mape_val is not None else "--", help="平均绝对百分比误差")
-
-        with st.container():
-            st.markdown("### 📈 对比图")
-            
-            plot_placeholder = st.empty()
-            
-            model = st.session_state.get(f"model_{line_type}")
-            poly = st.session_state.get(f"poly_{line_type}")
-            mape = st.session_state.get(f"mape_{line_type}")
-            
-            if model is not None and poly is not None:
-                if st.session_state.last_prediction is not None:
-                    fig = plot_chart(
-                        df,
-                        model,
-                        poly,
-                        mape,
-                        point_count=st.session_state.last_prediction.get("point_count"),
-                        predicted_time=st.session_state.last_prediction.get("predicted"),
-                        line_type=line_type
-                    )
-                    plot_placeholder.pyplot(fig, use_container_width=True)
-                    plt.close(fig)
-                else:
-                    fig = plot_chart(
-                        df, 
-                        model, 
-                        poly, 
-                        mape,
-                        line_type=line_type
-                    )
-                    plot_placeholder.pyplot(fig, use_container_width=True)
-                    plt.close(fig)
-    else:
-        st.info(f"👈 请在左侧上传{line_type}数据")
-
-# ============================================================
-# 右侧：AI智能体对话
-# ============================================================
-with right_col:
-    st.markdown(f"### 🎯 {line_type}工时预测小助手")
-    st.caption("输入点位数，AI估算工时 | 基于实际数据训练的预测模型")
-
-    chat_container = st.container(height=280)
-
-    with chat_container:
-        for msg in st.session_state.messages:
-            if msg["role"] == "user":
-                st.chat_message("user").write(msg["content"])
-            elif msg["role"] == "assistant":
-                st.chat_message("assistant").write(msg["content"])
-
-    # 预测结果卡片
-    if st.session_state.last_prediction_result is not None:
-        last = st.session_state.last_prediction_result
-        p = last["predicted"]
-        dev = last["deviation_pct"]
-        theory = last["theory"]
-        point_count = last["point_count"]
-        mape_val = last["mape"]
-
-        if abs(dev) <= mape_val:
-            status_color = "#2ecc71"
-            status_text = "✅ 可信"
-        else:
-            status_color = "#e74c3c"
-            status_text = "⚠️ 超出正常范围"
-
-        st.markdown(f"""
-        <div style="background: linear-gradient(135deg, #f0f4ff 0%, #e8eeff 100%); 
-                    padding: 0.8rem 1rem; 
-                    border-radius: 10px; 
-                    border-left: 4px solid #4a6cf7;
-                    margin-bottom: 0.5rem;">
-            <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap;">
-                <div>
-                    <span style="font-size: 0.8rem; color: #888;">上次预测 ({line_type})</span>
-                    <div style="font-size: 1.4rem; font-weight: 700; color: #1f77b4;">
-                        {point_count}点 → {p:.2f}s
-                    </div>
-                </div>
-                <div style="text-align: right;">
-                    <span style="font-size: 0.8rem; color: #888;">理论标准</span>
-                    <div style="font-size: 1rem; font-weight: 600;">{theory:.2f}s</div>
-                </div>
-                <div style="text-align: right;">
-                    <span style="font-size: 0.8rem; color: #888;">偏差</span>
-                    <div style="font-size: 1rem; font-weight: 600; color: {'#2ecc71' if abs(dev) <= mape_val else '#e74c3c'};">
-                        {dev:+.1f}%
-                    </div>
-                </div>
-                <div>
-                    <span style="background: {status_color}; color: white; padding: 0.2rem 0.6rem; border-radius: 20px; font-size: 0.7rem; font-weight: 600;">
-                        {status_text}
-                    </span>
-                </div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-    user_input = st.chat_input("输入点位数（如 1000）或提问...")
-
-    if user_input:
-        st.session_state.messages.append({"role": "user", "content": user_input})
-
-        numbers = re.findall(r'\d+', user_input)
-        prediction_result = None
-
-        if numbers and st.session_state.get(f"model_trained_{line_type}", False):
-            point_count = int(numbers[0])
-            pred_data = predict_time(point_count, line_type)
-            if pred_data:
-                prediction_result = {
-                    "point_count": point_count,
-                    "predicted": pred_data["predicted"],
-                    "theory": pred_data["theory"],
-                    "deviation_pct": pred_data["deviation_pct"],
-                    "mape": pred_data["mape"],
-                    "r2": pred_data["r2"],
-                    "mae": pred_data["mae"]
-                }
-                st.session_state.prediction_history.append({
-                    "line_type": line_type,
-                    "point_count": point_count,
-                    "predicted": pred_data["predicted"],
-                    "deviation_pct": pred_data["deviation_pct"]
-                })
-                save_history(st.session_state.prediction_history)
-
-                st.session_state.last_prediction = {
-                    "point_count": point_count,
-                    "predicted": pred_data["predicted"]
-                }
-                st.session_state.last_prediction_result = {
-                    "point_count": point_count,
-                    "predicted": pred_data["predicted"],
-                    "theory": pred_data["theory"],
-                    "deviation_pct": pred_data["deviation_pct"],
-                    "mape": pred_data["mape"]
-                }
-
-        with st.spinner("智能体分析中..."):
-            response = chat_with_ai(user_input, prediction_result, line_type)
-
-        st.session_state.messages.append({"role": "assistant", "content": response})
-        st.rerun()
-
-    btn_col1, btn_col2 = st.columns(2)
-    with btn_col1:
-        if st.button("🗑️ 清空对话", use_container_width=True):
-            st.session_state.messages = []
-            st.rerun()
-
-    with btn_col2:
-        with st.expander("📊 预测历史"):
-            if st.session_state.prediction_history:
-                for h in st.session_state.prediction_history[-20:]:
-                    line = h.get('line_type', 'SMT')
-                    st.write(f"- [{line}] {h['point_count']}点: {h['predicted']:.1f}s (偏差{h['deviation_pct']:+.1f}%)")
-            else:
-                st.write("暂无预测记录")
+                st.error(f"❌ 未找到'单板点数'/'元件总数'或'实际工时/s'列")
