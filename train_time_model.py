@@ -94,7 +94,6 @@ def get_column_mapping(df):
     columns = df.columns.tolist()
     
     point_col = None
-    # 优先匹配的关键词列表（按优先级排序）
     point_keywords = ['单板点数', '点位数', '元件总数', '点数', '元件数', '总点数']
     
     for keyword in point_keywords:
@@ -168,9 +167,7 @@ def load_saved_data(line_type):
             if point_col is not None and actual_col is not None:
                 df_clean = df[[point_col, actual_col]].copy()
                 df_clean.columns = ['点位数', '实际工时']
-                # 移除空值
                 df_clean = df_clean.dropna()
-                # 移除点位数为0或负数的行
                 df_clean = df_clean[df_clean['点位数'] > 0]
                 return df_clean
         except Exception as e:
@@ -183,7 +180,7 @@ def load_saved_data(line_type):
 # ============================================================
 def train_prediction_model(df):
     if len(df) < 2:
-        return None, None, None, None, None
+        return None, None, None, None, None, None, None
     
     X = df[['点位数']].values
     y = df['实际工时'].values
@@ -194,37 +191,23 @@ def train_prediction_model(df):
     model.fit(X_poly, y)
     y_pred = model.predict(X_poly)
     
+    residuals = y - y_pred
+    
     r2 = r2_score(y, y_pred)
     mae = mean_absolute_error(y, y_pred)
     mape = np.mean(np.abs((y - y_pred) / y)) * 100
     
-    return model, poly, r2, mae, mape
+    return model, poly, r2, mae, mape, residuals, y_pred
 
 # ============================================================
-# 理论工时计算（使用实际数据拟合的系数，更加准确）
+# 理论工时计算（修正系数，使曲线更合理）
 # ============================================================
-def calculate_theory_time_from_data(df):
-    """从实际数据中拟合理论工时的系数"""
-    if len(df) < 2:
-        return 0.0362, 0.5
-    
-    X = df[['点位数']].values
-    y = df['实际工时'].values
-    
-    # 使用线性回归拟合理论工时：y = a * x + b
-    from sklearn.linear_model import LinearRegression as LR
-    lr = LR()
-    lr.fit(X, y)
-    a = lr.coef_[0]
-    b = lr.intercept_
-    
-    # 确保系数为正
-    if a <= 0:
-        a = 0.0362
-    if b < 0:
-        b = 0.5
-    
-    return a, b
+def calculate_theory_time(point_count, a=0.5, b=2.0):
+    """
+    理论工时计算：a * point_count + b
+    默认参数 a=0.5, b=2.0 使得理论线有明显斜率
+    """
+    return a * point_count + b
 
 # ============================================================
 # 对比图（自适应版）
@@ -247,25 +230,22 @@ def plot_chart(df, model, poly, mape, point_count=None, predicted_time=None, lin
     
     X_smooth_poly = poly.transform(X_smooth)
     y_pred_smooth = model.predict(X_smooth_poly)
-    
-    # 使用实际数据拟合的理论工时系数
-    a, b = calculate_theory_time_from_data(df)
-    y_theory = a * X_smooth.flatten() + b
+    y_theory = calculate_theory_time(X_smooth.flatten())
 
     fig, ax = plt.subplots(figsize=(screen['fig_width'], screen['fig_height']), dpi=100)
     fig.subplots_adjust(left=0.08, right=0.95, top=0.92, bottom=0.12)
 
     # 数据点
     ax.scatter(X, y, color='#1f77b4', s=screen['marker_size'], alpha=0.7, 
-               label='Actual Data', zorder=3)
+               label='实际数据', zorder=3)
     
     # 预测曲线
     ax.plot(X_smooth, y_pred_smooth, color='#d62728', linewidth=2.5, 
-            label='Prediction Curve (Polynomial)', zorder=2)
+            label='预测曲线', zorder=2)
     
-    # 理论直线 - 使用实际数据拟合的系数，确保与数据范围匹配
+    # 理论直线 - 使用修正后的参数
     ax.plot(X_smooth, y_theory, color='#2ca02c', linewidth=2, linestyle='--', 
-            label=f'Theory Line (y={a:.4f}x+{b:.2f})', zorder=2)
+            label='理论工时 (a=0.5, b=2.0)', zorder=2)
     
     # 误差带
     mape_val = mape if mape is not None else 17.0
@@ -273,30 +253,30 @@ def plot_chart(df, model, poly, mape, point_count=None, predicted_time=None, lin
     y_lower = y_pred_smooth * (1 - mape_val / 100)
     ax.fill_between(X_smooth.flatten(), y_lower, y_upper, 
                     color='#d62728', alpha=0.10, 
-                    label=f'±{mape_val:.1f}% Error Band')
+                    label=f'±{mape_val:.1f}% 误差带')
 
     # 预测点标记
     if point_count is not None and predicted_time is not None:
         ax.scatter([point_count], [predicted_time], color='#ff6b6b', 
                    s=screen['marker_size'] * 3.5,
                    edgecolors='white', linewidth=2, zorder=6, 
-                   label=f'Prediction: {point_count} pts → {predicted_time:.1f}s')
+                   label=f'预测: {point_count}点 → {predicted_time:.1f}s')
         ax.axvline(x=point_count, color='#ff6b6b', linestyle=':', alpha=0.6, linewidth=1.2)
         ax.axhline(y=predicted_time, color='#ff6b6b', linestyle=':', alpha=0.6, linewidth=1.2)
 
     ax.legend(loc='upper left', fontsize=screen['legend_size'], 
               framealpha=0.92, edgecolor='#ccc')
     
-    ax.set_xlabel('Point Count (元件总数)', fontsize=screen['font_size'], fontweight='bold')
-    ax.set_ylabel('Time (seconds)', fontsize=screen['font_size'], fontweight='bold')
+    ax.set_xlabel('点位数', fontsize=screen['font_size'], fontweight='bold')
+    ax.set_ylabel('工时 (秒)', fontsize=screen['font_size'], fontweight='bold')
     
     # 标题
-    title = f'📊 {line_type} Manhour Prediction Chart'
+    title = f'📊 {line_type} 工时预测图'
     ax.set_title(title, fontsize=screen['title_size'], fontweight='bold', pad=15)
     
     ax.grid(True, alpha=0.25, linestyle='--')
     
-    # 坐标轴范围 - 确保理论线可见
+    # 坐标轴范围
     x_max = X.max() * 1.15
     y_max = max(y.max(), y_theory.max(), y_pred_smooth.max()) * 1.2
     
@@ -348,16 +328,9 @@ def predict_time(point_count, line_type):
         X_input = np.array([[point_count]])
         X_input_poly = st.session_state.get(f"poly_{line_type}").transform(X_input)
         predicted = st.session_state.get(f"model_{line_type}").predict(X_input_poly)[0]
-        
-        # 使用实际数据拟合的理论工时
-        df = st.session_state.get(f"df_{line_type}")
-        if df is not None and len(df) > 0:
-            a, b = calculate_theory_time_from_data(df)
-            theory = a * point_count + b
-        else:
-            theory = 0.0362 * point_count + 0.5
-            
-        deviation_pct = (predicted - theory) / theory * 100 if theory > 0 else 0
+        # 使用修正后的理论工时计算
+        theory = calculate_theory_time(point_count)
+        deviation_pct = (predicted - theory) / theory * 100
         return {
             "predicted": predicted,
             "theory": theory,
@@ -444,6 +417,7 @@ for line_type in ["SMT", "DIP"]:
         st.session_state[f"df_{line_type}"] = None
         st.session_state[f"r2_{line_type}"] = None
         st.session_state[f"mae_{line_type}"] = None
+        st.session_state[f"raw_df_{line_type}"] = None
 
 if "upload_authorized" not in st.session_state:
     st.session_state.upload_authorized = False
@@ -466,8 +440,7 @@ def load_data_for_line(line_type):
     if saved_df is not None and len(saved_df) > 0:
         st.session_state[f"raw_df_{line_type}"] = saved_df.copy()
         
-        # 训练模型
-        model, poly, r2, mae, mape = train_prediction_model(saved_df)
+        model, poly, r2, mae, mape, residuals, y_pred = train_prediction_model(saved_df)
         
         if model is not None:
             st.session_state[f"model_trained_{line_type}"] = True
@@ -515,6 +488,7 @@ with st.sidebar:
         st.warning(f"⚠️ 暂无{line_type}数据")
 
     st.markdown("---")
+    
     st.markdown("#### 🔒 管理员验证")
     admin_pwd = st.text_input("上传密码", type="password", key="admin_pwd")
     if st.button("验证并上传", use_container_width=True):
@@ -539,7 +513,6 @@ with st.sidebar:
                 df = df_raw[[point_col, actual_col]].copy()
                 df.columns = ['点位数', '实际工时']
                 df = df.dropna()
-                # 移除点位数<=0的行
                 df = df[df['点位数'] > 0]
                 
                 if len(df) > 0:
