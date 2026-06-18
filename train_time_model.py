@@ -407,13 +407,10 @@ st.markdown("<h1 style='text-align: center;'>⚙️ SMT 工时预测系统</h1>"
 st.markdown("<hr style='margin: 0.5rem 0;'>", unsafe_allow_html=True)
 
 # ============================================================
-# 左右两栏
+# 左侧：模型评估 → 对比图
 # ============================================================
 left_col, right_col = st.columns([1, 1], gap="large")
 
-# ============================================================
-# 左侧：模型评估 → 对比图 → 预测区域
-# ============================================================
 with left_col:
     if st.session_state.models is not None:
         models = st.session_state.models
@@ -457,32 +454,36 @@ with left_col:
                 fig = plot_chart(models)
                 plot_placeholder.pyplot(fig, use_container_width=True)
                 plt.close(fig)
-        
-        # ============================================================
-        # 预测区域（放在左侧对比图下方）
-        # ============================================================
-        st.markdown("---")
+    else:
+        st.info("👈 请上传数据")
+
+# ============================================================
+# 右侧：SMT工时预测 → AI分析（纵向排列，宽度一致）
+# ============================================================
+with right_col:
+    # SMT工时预测
+    with st.container():
         st.markdown("### 🎯 SMT工时预测")
         
         board_type = st.radio(
             "选择板类型",
             ["单面", "双面"],
             horizontal=True,
-            key="board_type_left"
+            key="board_type_right"
         )
         
         col1, col2 = st.columns(2)
         with col1:
-            top_points = st.number_input("TOP面点数", min_value=0, value=100, step=10, key="top_points_left")
+            top_points = st.number_input("TOP面点数", min_value=0, value=100, step=10, key="top_points_right")
         with col2:
             if board_type == "双面":
-                bot_points = st.number_input("BOT面点数", min_value=0, value=50, step=10, key="bot_points_left")
+                bot_points = st.number_input("BOT面点数", min_value=0, value=50, step=10, key="bot_points_right")
             else:
                 bot_points = 0
                 st.markdown("**BOT面点数**")
                 st.caption("单面板无需输入")
         
-        if st.button("🚀 预测", use_container_width=True, key="predict_btn_left"):
+        if st.button("🚀 预测", use_container_width=True, key="predict_btn_right"):
             if st.session_state.models is not None:
                 result = predict_time(board_type, top_points, bot_points, st.session_state.models)
                 if result:
@@ -551,49 +552,48 @@ with left_col:
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
-    else:
-        st.info("👈 请上传数据")
-
-# ============================================================
-# 右侧：AI对话
-# ============================================================
-with right_col:
-    st.markdown("### 💬 AI分析")
-    st.caption("输入点位数或提问，AI帮你分析")
     
-    chat_container = st.container(height=480)
-    with chat_container:
-        for msg in st.session_state.messages[-20:]:
-            if msg["role"] == "user":
-                st.chat_message("user").write(msg["content"])
-            elif msg["role"] == "assistant":
-                st.chat_message("assistant").write(msg["content"])
+    # 分隔线
+    st.markdown("---")
     
-    user_input = st.chat_input("输入点位数（如 100）或提问...")
-    if user_input:
-        st.session_state.messages.append({"role": "user", "content": user_input})
+    # AI分析
+    with st.container():
+        st.markdown("### 💬 AI分析")
+        st.caption("输入点位数或提问，AI帮你分析")
         
-        numbers = re.findall(r'\d+', user_input)
+        chat_container = st.container(height=350)
+        with chat_container:
+            for msg in st.session_state.messages[-20:]:
+                if msg["role"] == "user":
+                    st.chat_message("user").write(msg["content"])
+                elif msg["role"] == "assistant":
+                    st.chat_message("assistant").write(msg["content"])
         
-        with st.spinner("分析中..."):
-            if st.session_state.last_prediction_result is not None and numbers:
-                response = chat_with_ai(user_input, st.session_state.last_prediction_result)
-            else:
-                response = chat_with_ai(user_input, None)
-        
-        st.session_state.messages.append({"role": "assistant", "content": response})
-        st.rerun()
-    
-    btn_col1, btn_col2 = st.columns(2)
-    with btn_col1:
-        if st.button("🗑️ 清空对话", use_container_width=True):
-            st.session_state.messages = []
+        user_input = st.chat_input("输入点位数（如 100）或提问...")
+        if user_input:
+            st.session_state.messages.append({"role": "user", "content": user_input})
+            
+            numbers = re.findall(r'\d+', user_input)
+            
+            with st.spinner("分析中..."):
+                if st.session_state.last_prediction_result is not None and numbers:
+                    response = chat_with_ai(user_input, st.session_state.last_prediction_result)
+                else:
+                    response = chat_with_ai(user_input, None)
+            
+            st.session_state.messages.append({"role": "assistant", "content": response})
             st.rerun()
-    
-    with btn_col2:
-        with st.expander("📊 预测历史"):
-            if st.session_state.prediction_history:
-                for h in st.session_state.prediction_history[-20:]:
-                    st.write(f"- {h}")
-            else:
-                st.write("暂无预测记录")
+        
+        btn_col1, btn_col2 = st.columns(2)
+        with btn_col1:
+            if st.button("🗑️ 清空对话", use_container_width=True):
+                st.session_state.messages = []
+                st.rerun()
+        
+        with btn_col2:
+            with st.expander("📊 预测历史"):
+                if st.session_state.prediction_history:
+                    for h in st.session_state.prediction_history[-20:]:
+                        st.write(f"- {h}")
+                else:
+                    st.write("暂无预测记录")
