@@ -156,16 +156,17 @@ def predict_time(points, models=None):
     }
 
 # ============================================================
-# 绘图
+# 绘图 - 缓存图表，避免重复生成
 # ============================================================
-def plot_chart(models, points=None, predicted=None, line_type="SMT"):
-    
+@st.cache_data
+def generate_chart(_models, points=None, predicted_time=None, line_type="SMT"):
+    """生成图表并缓存，避免点击预测时重新生成"""
     screen = get_screen_size()
     
     fig, ax = plt.subplots(figsize=(screen['fig_width'], screen['fig_height']), dpi=100)
     
-    if 'smt' in models:
-        model_info = models['smt']
+    if 'smt' in _models:
+        model_info = _models['smt']
         df = model_info['data']
         x = df['单板点数']
         y = df['标准工时']
@@ -180,10 +181,10 @@ def plot_chart(models, points=None, predicted=None, line_type="SMT"):
             ax.plot(x_smooth, y_smooth, color='#d62728', linewidth=2, 
                    label=f'Fit Curve (R²={model_info["r2"]:.3f})')
     
-    if predicted is not None and points is not None:
-        ax.scatter([points], [predicted['time']], color='#ff6b6b', 
+    if points is not None and predicted_time is not None:
+        ax.scatter([points], [predicted_time], color='#ff6b6b', 
                   s=screen['marker_size'] * 3, edgecolors='white', linewidth=2, zorder=6,
-                  label=f'Prediction: {points} pts → {predicted["time"]:.1f}s')
+                  label=f'Prediction: {points} pts → {predicted_time:.1f}s')
     
     ax.set_xlabel('Points (pts)', fontsize=screen['font_size'], fontweight='bold')
     ax.set_ylabel('Time (s)', fontsize=screen['font_size'], fontweight='bold')
@@ -300,7 +301,7 @@ def hash_password(password):
 if "messages" not in st.session_state:
     st.session_state.messages = load_chat_history()
 
-for key in ['models', 'df_raw', 'last_prediction', 'last_prediction_result']:
+for key in ['models', 'df_raw', 'last_prediction', 'last_prediction_result', 'cached_fig']:
     if key not in st.session_state:
         st.session_state[key] = None
 
@@ -317,6 +318,9 @@ smt_df = load_smt_data()
 if smt_df is not None and len(smt_df) > 0:
     st.session_state.df_raw = smt_df
     st.session_state.models = train_models(smt_df)
+    # 预生成基础图表缓存
+    if st.session_state.models is not None and 'smt' in st.session_state.models:
+        st.session_state.cached_fig = generate_chart(st.session_state.models)
 
 # ============================================================
 # 侧边栏
@@ -355,6 +359,9 @@ with st.sidebar:
                 save_smt_data(df_raw)
                 st.session_state.models = train_models(df_raw)
                 st.session_state.df_raw = df_raw
+                # 更新缓存图表
+                if st.session_state.models is not None and 'smt' in st.session_state.models:
+                    st.session_state.cached_fig = generate_chart(st.session_state.models)
                 st.success(f"✅ 已上传，共 {len(df_raw)} 行")
                 st.rerun()
             else:
@@ -400,19 +407,28 @@ with left_col:
             st.markdown("### 📈 散点图与拟合曲线")
             plot_placeholder = st.empty()
             
+            # 使用缓存图表，避免重复生成
             if st.session_state.last_prediction_result is not None:
                 last = st.session_state.last_prediction_result
-                fig = plot_chart(
+                # 生成带预测点的图表
+                fig = generate_chart(
                     models,
                     points=last.get('points'),
-                    predicted=last
+                    predicted_time=last.get('time')
                 )
                 plot_placeholder.pyplot(fig, use_container_width=True)
                 plt.close(fig)
             else:
-                fig = plot_chart(models)
-                plot_placeholder.pyplot(fig, use_container_width=True)
-                plt.close(fig)
+                # 使用缓存的图表
+                if st.session_state.cached_fig is not None:
+                    plot_placeholder.pyplot(st.session_state.cached_fig, use_container_width=True)
+                    plt.close(st.session_state.cached_fig)
+                else:
+                    # 如果没有缓存，生成新的
+                    fig = generate_chart(models)
+                    st.session_state.cached_fig = fig
+                    plot_placeholder.pyplot(fig, use_container_width=True)
+                    plt.close(fig)
     else:
         st.info("👈 请上传数据")
 
@@ -483,7 +499,6 @@ with st.container():
             if msg["role"] == "user":
                 st.chat_message("user").write(msg["content"])
             elif msg["role"] == "assistant":
-                # 使用Markdown渲染AI回复
                 st.chat_message("assistant").markdown(msg["content"])
     
     col_input, col_btn = st.columns([6, 1])
