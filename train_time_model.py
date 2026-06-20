@@ -125,7 +125,11 @@ def train_models(df):
             'mae': mean_absolute_error(y, y_pred),
             'mape': np.mean(np.abs((y - y_pred) / y)) * 100,
             'data': df_clean,
-            'sample_count': len(df_clean)
+            'sample_count': len(df_clean),
+            'x_min': df_clean['单板点数'].min(),
+            'x_max': df_clean['单板点数'].max(),
+            'y_min': df_clean['标准工时'].min(),
+            'y_max': df_clean['标准工时'].max()
         }
     
     return models
@@ -190,74 +194,78 @@ def plot_chart(models, points=None, predicted=None, line_type="SMT"):
     return fig
 
 # ============================================================
-# AI对话 - 严格基于SMT工时预测模块的输出
+# AI对话 - 直接从对比图（模型数据）获取信息，不依赖预测模块
 # ============================================================
-def chat_with_ai(user_message, prediction_result=None, line_type="SMT"):
+def chat_with_ai(user_message, models=None, line_type="SMT"):
     headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
 
-    if prediction_result:
-        p = prediction_result
-        # 计算预测范围
-        lower_bound = p['time'] * (1 - p['mape'] / 100)
-        upper_bound = p['time'] * (1 + p['mape'] / 100)
+    # 检查是否有模型数据
+    if models is not None and 'smt' in models:
+        model_info = models['smt']
         
-        # 构建与SMT工时预测模块完全一致的输出
-        result_summary = f"""
-【SMT工时预测模块输出 - 与界面显示完全一致】
-
-📌 预测结果
+        # 提取图表数据（对比图的核心信息）
+        df = model_info['data']
+        x_data = df['单板点数'].tolist()
+        y_data = df['标准工时'].tolist()
+        
+        # 计算数据分布统计
+        data_summary = f"""
+【对比图（散点图与拟合曲线）数据摘要】
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  • 输入点数：{p['points']} 点
-  • 预测标准工时：{p['time']:.2f} 秒
-  • 预测范围（±MAPE）：{lower_bound:.2f} ~ {upper_bound:.2f} 秒
+📊 数据概况
+  • 数据点数量：{model_info['sample_count']} 个
+  • 点数范围：{model_info['x_min']} ~ {model_info['x_max']} 点
+  • 工时范围：{model_info['y_min']:.1f} ~ {model_info['y_max']:.1f} 秒
 
-📊 模型评估指标（基于您上传的真实数据计算）
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  • R²（决定系数）：{p['r2']:.3f}
-  • MAPE（平均绝对百分比误差）：{p['mape']:.1f}%
-  • MAE（平均绝对误差）：{p['mae']:.2f} 秒
+📈 拟合曲线（二次多项式回归）
+  • R²（决定系数）：{model_info['r2']:.3f}
+  • MAPE（平均绝对百分比误差）：{model_info['mape']:.1f}%
+  • MAE（平均绝对误差）：{model_info['mae']:.2f} 秒
 
-📈 图表信息
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  • 数据点数量：{st.session_state.models['smt']['sample_count']} 个
-  • 拟合曲线：二次多项式回归
-  • 红色标记为当前预测点
+📌 数据分布特征
+  • 点数平均值：{np.mean(x_data):.1f} 点
+  • 工时平均值：{np.mean(y_data):.1f} 秒
+  • 点数中位数：{np.median(x_data):.1f} 点
+  • 工时中位数：{np.median(y_data):.1f} 秒
+
+📐 拟合曲线公式（二次多项式）
+  • 根据二次多项式回归拟合，曲线平滑上升/下降
+  • 反映了点数与工时之间的整体变化趋势
         """
         
         system_prompt = f"""你是SMT工时预测数据分析助手。
 
 【核心规则 - 必须100%遵守】：
-1. 你只能基于上面的【SMT工时预测模块输出】中的数据进行分析
-2. 这个输出与界面上的"预测结果"卡片完全一致，是唯一的数据来源
-3. 不要说任何不在这个输出中的内容
+1. 你只能基于上面的【对比图数据摘要】中的数据进行分析
+2. 这些数据直接来自"散点图与拟合曲线"图表
+3. 不要说任何不在这个数据摘要中的内容
 4. 禁止使用："行业基准"、"行业标准"、"通常"、"一般"、"应该"等词汇
 5. 禁止给出"优化建议"、"改进建议"等超出数据范围的内容
-6. 分析必须从图表（散点图+拟合曲线）的视觉角度出发
+6. 所有分析必须基于图表数据，从数据本身出发
 
-{result_summary}
+{data_summary}
 
-请按以下格式输出（严格遵循，不要添加额外内容）：
+请根据用户的问题进行分析。如果用户输入了具体点数（如 100），你可以：
+1. 参考图表中附近的数据点
+2. 根据拟合曲线趋势给出估算
 
-【预测结果确认】
-输入 {p['points']} 点，预测工时 {p['time']:.2f} 秒，范围 {lower_bound:.2f} ~ {upper_bound:.2f} 秒
+请按以下格式输出（严格遵循）：
 
-【基于图表的分析】
-- 从散点图来看，数据点分布趋势是...（观察数据点是否集中在拟合曲线附近）
-- 拟合曲线显示，点数与工时的关系是...（描述曲线走势）
-- 当前预测点位于曲线的...位置
+【图表数据解读】
+（基于数据摘要，说明数据的整体分布特征）
+
+【针对用户问题的分析】
+（根据用户输入的点数或问题，结合图表数据给出具体分析）
 
 【数据可信度评估】
-- R²={p['r2']:.3f}，说明模型能解释 {p['r2']*100:.1f}% 的数据变化
-- MAPE={p['mape']:.1f}%，预测偏差范围在 ±{p['mape']:.1f}% 内
-- MAE={p['mae']:.2f}秒，平均偏差约 {p['mae']:.2f} 秒
+（基于R²、MAPE、MAE三个指标说明模型拟合程度）
 
 【总结】
-基于以上数据，本次预测结果（可信/基本可信/需谨慎），预测工时 {p['time']:.2f} 秒，范围 {lower_bound:.2f} ~ {upper_bound:.2f} 秒。"""
+（基于图表数据的总结性结论）"""
         
-        user_message = "请分析预测结果"
     else:
         system_prompt = f"""你是SMT工时预测数据分析助手。
-请提示用户先进行预测，然后再提问分析。只说必要的内容，不要添加多余信息。"""
+当前还没有上传数据，请提示用户先在左侧上传Excel数据文件（包含：单板点数、标准工时两列）。"""
 
     messages = [{"role": "system", "content": system_prompt}]
     chat_history = st.session_state.messages[-20:] if st.session_state.messages else []
@@ -268,7 +276,7 @@ def chat_with_ai(user_message, prediction_result=None, line_type="SMT"):
     payload = {
         "model": "deepseek-ai/DeepSeek-V3",
         "messages": messages,
-        "temperature": 0.1,  # 极低温度，确保输出稳定
+        "temperature": 0.1,
         "max_tokens": 1500
     }
 
@@ -458,13 +466,13 @@ with right_col:
             """, unsafe_allow_html=True)
 
 # ============================================================
-# 第二行：AI分析
+# 第二行：AI分析 - 直接从对比图获取数据
 # ============================================================
 st.markdown("---")
 
 with st.container():
     st.markdown("<h3 style='text-align: center;'>💬 AI 分 析</h3>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center; color: #888; font-size: 0.85rem;'>基于预测结果和图表数据的专业分析</p>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: #888; font-size: 0.85rem;'>基于对比图（散点图与拟合曲线）的数据分析</p>", unsafe_allow_html=True)
     
     chat_container = st.container(height=350)
     with chat_container:
@@ -488,13 +496,9 @@ with st.container():
         st.session_state.messages.append({"role": "user", "content": user_input})
         save_chat_history(st.session_state.messages)
         
-        numbers = re.findall(r'\d+', user_input)
-        
+        # 直接从模型数据获取，不依赖预测模块
         with st.spinner("分析中..."):
-            if st.session_state.last_prediction_result is not None and numbers:
-                response = chat_with_ai(user_input, st.session_state.last_prediction_result)
-            else:
-                response = chat_with_ai(user_input, None)
+            response = chat_with_ai(user_input, st.session_state.models)
         
         st.session_state.messages.append({"role": "assistant", "content": response})
         save_chat_history(st.session_state.messages)
