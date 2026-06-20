@@ -133,13 +133,14 @@ def get_data_density_zones(df, column='单板点数'):
     
     return zones
 
-def create_density_chart(model_info):
+def create_density_chart(models):
     """创建数据分布密度图"""
     screen = get_screen_size()
     
     fig, ax = plt.subplots(figsize=(screen['fig_width'], screen['fig_height'] * 0.6), dpi=100)
     
-    if model_info is not None:
+    if 'smt' in models:
+        model_info = models['smt']
         df = model_info['data']
         x = df['单板点数']
         
@@ -161,186 +162,6 @@ def create_density_chart(model_info):
     
     plt.tight_layout()
     return fig
-
-# ============================================================
-# 多模型训练 - 只保留适合的模型
-# ============================================================
-def train_and_select_best_model(df):
-    """训练多个模型，自动选择最适合的"""
-    
-    df_clean = df.dropna(subset=['单板点数', '标准工时'])
-    df_clean = df_clean[(df_clean['单板点数'] > 0) & (df_clean['标准工时'] > 0)]
-    
-    if len(df_clean) < 3:
-        return None, None
-    
-    X = df_clean[['单板点数']].values
-    y = df_clean['标准工时'].values
-    
-    candidates = []
-    
-    # 1. 多项式回归（2次）
-    try:
-        poly = PolynomialFeatures(degree=2)
-        X_poly = poly.fit_transform(X)
-        model = LinearRegression()
-        model.fit(X_poly, y)
-        y_pred = model.predict(X_poly)
-        r2 = r2_score(y, y_pred)
-        mae = mean_absolute_error(y, y_pred)
-        mape = np.mean(np.abs((y - y_pred) / y)) * 100
-        
-        # 检查是否过拟合：使用交叉验证
-        cv_scores = cross_val_score(model, X_poly, y, cv=min(5, len(df_clean)))
-        cv_mean = np.mean(cv_scores)
-        
-        # 只有在R² > 0.7且交叉验证得分差距不大时才保留
-        if r2 > 0.7 and (r2 - cv_mean) < 0.2:
-            candidates.append({
-                'name': '多项式回归(2次)',
-                'model': model,
-                'poly': poly,
-                'scaler': None,
-                'r2': float(r2),
-                'mae': float(mae),
-                'mape': float(mape),
-                'cv_mean': float(cv_mean),
-                'data': df_clean,
-                'sample_count': len(df_clean),
-                'x_min': float(df_clean['单板点数'].min()),
-                'x_max': float(df_clean['单板点数'].max()),
-                'y_min': float(df_clean['标准工时'].min()),
-                'y_max': float(df_clean['标准工时'].max()),
-                'x_mean': float(df_clean['单板点数'].mean()),
-                'y_mean': float(df_clean['标准工时'].mean()),
-                'x_std': float(df_clean['单板点数'].std()),
-                'y_std': float(df_clean['标准工时'].std()),
-                'df_clean': df_clean,
-                'y_pred': y_pred,
-                'y_true': y,
-                'X': X,
-                'type': 'polynomial_2'
-            })
-    except:
-        pass
-    
-    # 2. 多项式回归（3次）- 防止过拟合
-    try:
-        poly = PolynomialFeatures(degree=3)
-        X_poly = poly.fit_transform(X)
-        model = LinearRegression()
-        model.fit(X_poly, y)
-        y_pred = model.predict(X_poly)
-        r2 = r2_score(y, y_pred)
-        mae = mean_absolute_error(y, y_pred)
-        mape = np.mean(np.abs((y - y_pred) / y)) * 100
-        
-        cv_scores = cross_val_score(model, X_poly, y, cv=min(5, len(df_clean)))
-        cv_mean = np.mean(cv_scores)
-        
-        # 3次多项式容易过拟合，提高筛选标准
-        if r2 > 0.75 and (r2 - cv_mean) < 0.15:
-            candidates.append({
-                'name': '多项式回归(3次)',
-                'model': model,
-                'poly': poly,
-                'scaler': None,
-                'r2': float(r2),
-                'mae': float(mae),
-                'mape': float(mape),
-                'cv_mean': float(cv_mean),
-                'data': df_clean,
-                'sample_count': len(df_clean),
-                'x_min': float(df_clean['单板点数'].min()),
-                'x_max': float(df_clean['单板点数'].max()),
-                'y_min': float(df_clean['标准工时'].min()),
-                'y_max': float(df_clean['标准工时'].max()),
-                'x_mean': float(df_clean['单板点数'].mean()),
-                'y_mean': float(df_clean['标准工时'].mean()),
-                'x_std': float(df_clean['单板点数'].std()),
-                'y_std': float(df_clean['标准工时'].std()),
-                'df_clean': df_clean,
-                'y_pred': y_pred,
-                'y_true': y,
-                'X': X,
-                'type': 'polynomial_3'
-            })
-    except:
-        pass
-    
-    # 3. Ridge回归 - 适合处理过拟合
-    try:
-        poly = PolynomialFeatures(degree=2)
-        X_poly = poly.fit_transform(X)
-        scaler = StandardScaler()
-        X_scaled = scaler.fit_transform(X_poly)
-        model = Ridge(alpha=1.0)
-        model.fit(X_scaled, y)
-        y_pred = model.predict(X_scaled)
-        r2 = r2_score(y, y_pred)
-        mae = mean_absolute_error(y, y_pred)
-        mape = np.mean(np.abs((y - y_pred) / y)) * 100
-        
-        cv_scores = cross_val_score(model, X_scaled, y, cv=min(5, len(df_clean)))
-        cv_mean = np.mean(cv_scores)
-        
-        if r2 > 0.7 and (r2 - cv_mean) < 0.2:
-            candidates.append({
-                'name': 'Ridge回归',
-                'model': model,
-                'poly': poly,
-                'scaler': scaler,
-                'r2': float(r2),
-                'mae': float(mae),
-                'mape': float(mape),
-                'cv_mean': float(cv_mean),
-                'data': df_clean,
-                'sample_count': len(df_clean),
-                'x_min': float(df_clean['单板点数'].min()),
-                'x_max': float(df_clean['单板点数'].max()),
-                'y_min': float(df_clean['标准工时'].min()),
-                'y_max': float(df_clean['标准工时'].max()),
-                'x_mean': float(df_clean['单板点数'].mean()),
-                'y_mean': float(df_clean['标准工时'].mean()),
-                'x_std': float(df_clean['单板点数'].std()),
-                'y_std': float(df_clean['标准工时'].std()),
-                'df_clean': df_clean,
-                'y_pred': y_pred,
-                'y_true': y,
-                'X': X,
-                'type': 'ridge'
-            })
-    except:
-        pass
-    
-    # 选择最佳模型（按R²排序）
-    if candidates:
-        best = max(candidates, key=lambda x: x['r2'])
-        return best, candidates
-    
-    return None, []
-
-# ============================================================
-# 预测函数
-# ============================================================
-def predict_time_with_model(points, model_info):
-    """使用模型预测"""
-    if model_info is None:
-        return None
-    
-    X = np.array([[points]])
-    
-    if model_info['type'] == 'polynomial_2' or model_info['type'] == 'polynomial_3':
-        X_poly = model_info['poly'].transform(X)
-        pred = model_info['model'].predict(X_poly)[0]
-    elif model_info['type'] == 'ridge':
-        X_poly = model_info['poly'].transform(X)
-        X_scaled = model_info['scaler'].transform(X_poly)
-        pred = model_info['model'].predict(X_scaled)[0]
-    else:
-        return None
-    
-    return float(pred)
 
 def auto_analyze_data(df):
     """自动分析数据"""
@@ -409,14 +230,74 @@ def generate_data_summary(df):
     return summary
 
 # ============================================================
+# 训练模型
+# ============================================================
+def train_models(df):
+    models = {}
+    
+    df_clean = df.dropna(subset=['单板点数', '标准工时'])
+    df_clean = df_clean[(df_clean['单板点数'] > 0) & (df_clean['标准工时'] > 0)]
+    
+    if len(df_clean) >= 3:
+        X = df_clean[['单板点数']].values
+        y = df_clean['标准工时'].values
+        
+        poly = PolynomialFeatures(degree=2)
+        X_poly = poly.fit_transform(X)
+        model = LinearRegression()
+        model.fit(X_poly, y)
+        y_pred = model.predict(X_poly)
+        
+        models['smt'] = {
+            'model': model,
+            'poly': poly,
+            'r2': r2_score(y, y_pred),
+            'mae': mean_absolute_error(y, y_pred),
+            'mape': np.mean(np.abs((y - y_pred) / y)) * 100,
+            'data': df_clean,
+            'sample_count': len(df_clean),
+            'x_min': float(df_clean['单板点数'].min()),
+            'x_max': float(df_clean['单板点数'].max()),
+            'y_min': float(df_clean['标准工时'].min()),
+            'y_max': float(df_clean['标准工时'].max()),
+            'x_mean': float(df_clean['单板点数'].mean()),
+            'y_mean': float(df_clean['标准工时'].mean()),
+            'x_std': float(df_clean['单板点数'].std()),
+            'y_std': float(df_clean['标准工时'].std()),
+            'df_clean': df_clean
+        }
+    
+    return models
+
+# ============================================================
+# 预测函数
+# ============================================================
+def predict_time(points, models=None):
+    if models is None or 'smt' not in models:
+        return None
+    
+    X = np.array([[points]])
+    X_poly = models['smt']['poly'].transform(X)
+    pred = models['smt']['model'].predict(X_poly)[0]
+    
+    return {
+        'points': points,
+        'time': float(pred),
+        'r2': float(models['smt']['r2']),
+        'mape': float(models['smt']['mape']),
+        'mae': float(models['smt']['mae'])
+    }
+
+# ============================================================
 # 绘图函数
 # ============================================================
-def create_chart(model_info, points=None, predicted_time=None, line_type="SMT"):
+def create_chart(models, points=None, predicted_time=None, line_type="SMT"):
     screen = get_screen_size()
     
     fig, ax = plt.subplots(figsize=(screen['fig_width'], screen['fig_height']), dpi=100)
     
-    if model_info is not None:
+    if 'smt' in models:
+        model_info = models['smt']
         df = model_info['data']
         x = df['单板点数']
         y = df['标准工时']
@@ -426,17 +307,8 @@ def create_chart(model_info, points=None, predicted_time=None, line_type="SMT"):
         
         if len(x) > 1:
             x_smooth = np.linspace(max(0, x.min() - 10), x.max() + 10, 100).reshape(-1, 1)
-            
-            if model_info['type'] == 'polynomial_2' or model_info['type'] == 'polynomial_3':
-                x_poly = model_info['poly'].transform(x_smooth)
-                y_smooth = model_info['model'].predict(x_poly)
-            elif model_info['type'] == 'ridge':
-                x_poly = model_info['poly'].transform(x_smooth)
-                x_scaled = model_info['scaler'].transform(x_poly)
-                y_smooth = model_info['model'].predict(x_scaled)
-            else:
-                y_smooth = np.zeros_like(x_smooth)
-            
+            x_poly = model_info['poly'].transform(x_smooth)
+            y_smooth = model_info['model'].predict(x_poly)
             ax.plot(x_smooth, y_smooth, color='#d62728', linewidth=2, 
                    label=f'Fit Curve (R²={model_info["r2"]:.3f})')
     
@@ -459,25 +331,28 @@ def create_chart(model_info, points=None, predicted_time=None, line_type="SMT"):
 # 🤖 智能体核心
 # ============================================================
 
-def agent_chat(user_message, model_info=None, prediction_result=None, df_raw=None, line_type="SMT"):
+def agent_chat(user_message, models=None, prediction_result=None, df_raw=None, line_type="SMT"):
     headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
 
     numbers = re.findall(r'\d+', user_message)
     target_points = int(numbers[0]) if numbers else None
     
-    if target_points is not None and target_points > 0 and model_info is not None:
-        pred_time = predict_time_with_model(target_points, model_info)
-        if pred_time is not None:
-            lower_bound = pred_time * (1 - model_info['mape'] / 100)
-            upper_bound = pred_time * (1 + model_info['mape'] / 100)
+    if target_points is not None and target_points > 0 and models is not None and 'smt' in models:
+        pred_result = predict_time(target_points, models)
+        if pred_result:
+            pred_time = pred_result['time']
+            lower_bound = pred_time * (1 - pred_result['mape'] / 100)
+            upper_bound = pred_time * (1 + pred_result['mape'] / 100)
         else:
             pred_time = None
             lower_bound = None
             upper_bound = None
+            pred_result = None
     else:
         pred_time = None
         lower_bound = None
         upper_bound = None
+        pred_result = None
 
     knowledge_base = []
     
@@ -492,25 +367,26 @@ def agent_chat(user_message, model_info=None, prediction_result=None, df_raw=Non
         knowledge_base.append(data_summary)
         knowledge_base.append("")
     
-    if model_info is not None:
+    if models is not None and 'smt' in models:
+        model_info = models['smt']
         knowledge_base.append("【📈 模型信息】")
-        knowledge_base.append(f"- 模型类型：{model_info.get('name', '二次多项式回归')}")
+        knowledge_base.append(f"- 模型类型：二次多项式回归")
         knowledge_base.append(f"- 有效数据点：{model_info['sample_count']} 个")
         knowledge_base.append(f"- R²：{model_info['r2']:.4f}")
         knowledge_base.append(f"- MAPE：{model_info['mape']:.2f}%")
         knowledge_base.append(f"- MAE：{model_info['mae']:.2f} 秒")
         knowledge_base.append("")
     
-    if pred_time is not None:
+    if pred_result is not None:
         knowledge_base.append("【🎯 当前预测结果】")
-        knowledge_base.append(f"- 输入点数：{target_points} 点")
-        knowledge_base.append(f"- 预测工时：{pred_time:.2f} 秒")
+        knowledge_base.append(f"- 输入点数：{pred_result['points']} 点")
+        knowledge_base.append(f"- 预测工时：{pred_result['time']:.2f} 秒")
         knowledge_base.append(f"- 预测范围：{lower_bound:.2f} ~ {upper_bound:.2f} 秒")
         knowledge_base.append("")
     
     full_knowledge = "\n".join(knowledge_base)
     
-    if pred_time is not None:
+    if pred_result is not None:
         system_prompt = f"""你是一个专业的SMT工时预测分析智能体。
 
 【📚 你掌握的知识】
@@ -575,16 +451,9 @@ def hash_password(password):
 if "messages" not in st.session_state:
     st.session_state.messages = load_chat_history()
 
-for key in ['df_raw', 'last_prediction', 'last_prediction_result', 'chart_fig']:
+for key in ['models', 'df_raw', 'last_prediction', 'last_prediction_result', 'chart_fig']:
     if key not in st.session_state:
         st.session_state[key] = None
-
-# 模型相关状态
-if "model_info" not in st.session_state:
-    st.session_state.model_info = None
-
-if "all_candidates" not in st.session_state:
-    st.session_state.all_candidates = []
 
 # 控制数据分布图显示的状态
 if "show_density_chart" not in st.session_state:
@@ -602,11 +471,9 @@ if "screen_width" not in st.session_state:
 smt_df = load_smt_data()
 if smt_df is not None and len(smt_df) > 0:
     st.session_state.df_raw = smt_df
-    best_model, candidates = train_and_select_best_model(smt_df)
-    if best_model is not None:
-        st.session_state.model_info = best_model
-        st.session_state.all_candidates = candidates
-        st.session_state.chart_fig = create_chart(best_model)
+    st.session_state.models = train_models(smt_df)
+    if st.session_state.models is not None and 'smt' in st.session_state.models:
+        st.session_state.chart_fig = create_chart(st.session_state.models)
 
 # ============================================================
 # 侧边栏
@@ -614,35 +481,16 @@ if smt_df is not None and len(smt_df) > 0:
 with st.sidebar:
     st.markdown("### 🤖 智能体管理")
     
-    if st.session_state.model_info is not None:
-        sample_count = st.session_state.model_info['sample_count']
+    if st.session_state.models is not None and 'smt' in st.session_state.models:
+        sample_count = st.session_state.models['smt']['sample_count']
         st.success(f"✅ 数据行数: {sample_count}")
     else:
         st.warning("⚠️ 暂无数据，请上传")
     
     st.markdown("---")
+    st.markdown("#### 🔧 智能体工具")
     
-    # ========== 显示当前模型信息 ==========
-    if st.session_state.model_info is not None:
-        st.markdown("#### 📌 当前模型")
-        model = st.session_state.model_info
-        st.info(f"**{model.get('name', '二次多项式回归')}**")
-        st.caption(f"R²={model['r2']:.3f} | MAPE={model['mape']:.1f}% | MAE={model['mae']:.2f}s")
-        
-        # 如果有其他候选模型，显示对比信息（但不提供切换）
-        if len(st.session_state.all_candidates) > 1:
-            with st.expander("📊 模型对比"):
-                st.write("| 模型 | R² | MAPE | MAE |")
-                st.write("|------|-----|------|-----|")
-                for c in st.session_state.all_candidates:
-                    is_best = "⭐ " if c['name'] == model.get('name') else ""
-                    st.write(f"| {is_best}{c['name']} | {c['r2']:.3f} | {c['mape']:.1f}% | {c['mae']:.2f} |")
-    
-    st.markdown("---")
-    
-    # ========== 查看数据分布 ==========
-    st.markdown("#### 📊 数据分布")
-    
+    # 查看数据分布 - 使用session_state控制显示
     col1, col2 = st.columns([3, 1])
     with col1:
         if st.button("📊 查看数据分布", use_container_width=True):
@@ -655,12 +503,14 @@ with st.sidebar:
                 st.session_state.show_density_chart = False
                 st.rerun()
     
+    # 显示数据分布图
     if st.session_state.show_density_chart:
-        if st.session_state.model_info is not None:
-            fig = create_density_chart(st.session_state.model_info)
+        if st.session_state.models is not None and 'smt' in st.session_state.models:
+            fig = create_density_chart(st.session_state.models)
             st.pyplot(fig)
             plt.close(fig)
             
+            # 显示密度区域统计
             density = get_data_density_zones(st.session_state.df_raw, '单板点数')
             st.write("**📊 数据分布区域：**")
             for area, info in density.get('density_areas', {}).items():
@@ -669,8 +519,6 @@ with st.sidebar:
             st.info("请先上传数据")
     
     st.markdown("---")
-    
-    # ========== 管理员验证 ==========
     st.markdown("#### 🔒 管理员验证")
     admin_pwd = st.text_input("上传密码", type="password", key="admin_pwd")
     if st.button("验证并上传", use_container_width=True):
@@ -683,7 +531,7 @@ with st.sidebar:
     
     if st.session_state.upload_authorized:
         st.markdown("---")
-        st.markdown("#### 📤 上传SMT数据")
+        st.markdown(f"#### 📤 上传SMT数据")
         st.caption("Excel需包含：单板点数、标准工时")
         uploaded_file = st.file_uploader("选择Excel文件", type=["xlsx", "xls"], label_visibility="collapsed")
         if uploaded_file:
@@ -693,20 +541,24 @@ with st.sidebar:
             if not missing:
                 df_raw = df_raw.dropna(subset=['单板点数', '标准工时'])
                 save_smt_data(df_raw)
+                st.session_state.models = train_models(df_raw)
                 st.session_state.df_raw = df_raw
-                best_model, candidates = train_and_select_best_model(df_raw)
-                if best_model is not None:
-                    st.session_state.model_info = best_model
-                    st.session_state.all_candidates = candidates
-                    st.session_state.chart_fig = create_chart(best_model)
-                else:
-                    st.session_state.model_info = None
-                    st.session_state.all_candidates = []
                 st.session_state.last_prediction_result = None
+                if st.session_state.models is not None and 'smt' in st.session_state.models:
+                    st.session_state.chart_fig = create_chart(st.session_state.models)
                 st.success(f"✅ 已上传，共 {len(df_raw)} 行")
                 st.rerun()
             else:
                 st.error(f"❌ 缺少列：{missing}")
+    
+    st.markdown("---")
+    with st.expander("📋 数据格式要求"):
+        st.markdown("""
+        | 列名 | 说明 |
+        |------|------|
+        | 单板点数 | 整数 |
+        | 标准工时 | 浮点数（秒） |
+        """)
 
 # ============================================================
 # 主界面
@@ -714,19 +566,15 @@ with st.sidebar:
 st.markdown("<h1 style='text-align: center;'>🤖 SMT 工时预测系统 · AI智能体</h1>", unsafe_allow_html=True)
 st.markdown("<hr style='margin: 0.5rem 0;'>", unsafe_allow_html=True)
 
-# 显示当前模型信息
-if st.session_state.model_info is not None:
-    model = st.session_state.model_info
-    st.info(f"📌 当前模型：**{model.get('name', '二次多项式回归')}** | R²={model['r2']:.3f} | MAPE={model['mape']:.1f}% | 数据点={model['sample_count']}")
-
 # ============================================================
 # 第一行：左右两栏
 # ============================================================
 left_col, right_col = st.columns([1, 1], gap="large")
 
 with left_col:
-    if st.session_state.model_info is not None:
-        model_info = st.session_state.model_info
+    if st.session_state.models is not None and 'smt' in st.session_state.models:
+        models = st.session_state.models
+        model_info = models['smt']
         
         with st.container():
             st.markdown("### 📊 模型评估")
@@ -746,7 +594,7 @@ with left_col:
             if st.session_state.last_prediction_result is not None:
                 last = st.session_state.last_prediction_result
                 fig = create_chart(
-                    model_info,
+                    models,
                     points=last.get('points'),
                     predicted_time=last.get('time')
                 )
@@ -756,7 +604,7 @@ with left_col:
                 if st.session_state.chart_fig is not None:
                     plot_placeholder.pyplot(st.session_state.chart_fig, use_container_width=True)
                 else:
-                    fig = create_chart(model_info)
+                    fig = create_chart(models)
                     st.session_state.chart_fig = fig
                     plot_placeholder.pyplot(fig, use_container_width=True)
     else:
@@ -769,20 +617,13 @@ with right_col:
         points = st.number_input("单板点数", min_value=0, value=100, step=10, key="points_input")
         
         if st.button("🚀 预测", use_container_width=True, key="predict_btn"):
-            if st.session_state.model_info is not None:
-                pred_time = predict_time_with_model(points, st.session_state.model_info)
-                if pred_time is not None:
-                    result = {
-                        'points': points,
-                        'time': pred_time,
-                        'r2': st.session_state.model_info['r2'],
-                        'mape': st.session_state.model_info['mape'],
-                        'mae': st.session_state.model_info['mae']
-                    }
+            if st.session_state.models is not None and 'smt' in st.session_state.models:
+                result = predict_time(points, st.session_state.models)
+                if result:
                     st.session_state.last_prediction_result = result
                     st.session_state.last_prediction = {
                         'points': points,
-                        'time': pred_time
+                        'time': result['time']
                     }
                     st.rerun()
             else:
@@ -838,7 +679,7 @@ with st.container():
             st.warning("📁 无数据")
     
     with status_col2:
-        if st.session_state.model_info is not None:
+        if st.session_state.models is not None and 'smt' in st.session_state.models:
             st.success("📈 模型就绪")
         else:
             st.warning("📈 未训练")
@@ -879,7 +720,7 @@ with st.container():
         with st.spinner("🧠 智能体思考中..."):
             response = agent_chat(
                 user_input, 
-                model_info=st.session_state.model_info,
+                models=st.session_state.models,
                 prediction_result=st.session_state.last_prediction_result,
                 df_raw=st.session_state.df_raw
             )
