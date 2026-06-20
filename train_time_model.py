@@ -131,7 +131,9 @@ def train_models(df):
             'y_min': df_clean['标准工时'].min(),
             'y_max': df_clean['标准工时'].max(),
             'x_mean': df_clean['单板点数'].mean(),
-            'y_mean': df_clean['标准工时'].mean()
+            'y_mean': df_clean['标准工时'].mean(),
+            'x_std': df_clean['单板点数'].std(),
+            'y_std': df_clean['标准工时'].std()
         }
     
     return models
@@ -156,10 +158,9 @@ def predict_time(points, models=None):
     }
 
 # ============================================================
-# 绘图函数 - 返回figure对象
+# 绘图函数
 # ============================================================
 def create_chart(models, points=None, predicted_time=None, line_type="SMT"):
-    """创建图表，返回figure对象"""
     screen = get_screen_size()
     
     fig, ax = plt.subplots(figsize=(screen['fig_width'], screen['fig_height']), dpi=100)
@@ -196,79 +197,120 @@ def create_chart(models, points=None, predicted_time=None, line_type="SMT"):
     return fig
 
 # ============================================================
-# AI对话
+# AI对话 - 纵览全局，拥有完整权限
 # ============================================================
-def chat_with_ai(user_message, models=None, line_type="SMT"):
+def chat_with_ai(user_message, models=None, prediction_result=None, df_raw=None, line_type="SMT"):
     headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
 
+    # ========== 构建完整的全局知识库 ==========
+    knowledge_base = []
+    
+    # 1. 原始数据信息
+    if df_raw is not None and len(df_raw) > 0:
+        knowledge_base.append("【原始数据】")
+        knowledge_base.append(f"- 数据行数：{len(df_raw)} 行")
+        knowledge_base.append(f"- 列名：{', '.join(df_raw.columns.tolist())}")
+        knowledge_base.append(f"- 前5行数据预览：")
+        preview = df_raw.head(5).to_string()
+        knowledge_base.append(f"```\n{preview}\n```")
+        knowledge_base.append("")
+    
+    # 2. 模型和图表信息
     if models is not None and 'smt' in models:
         model_info = models['smt']
+        df = model_info['data']
         
-        numbers = re.findall(r'\d+', user_message)
-        target_points = int(numbers[0]) if numbers else None
+        knowledge_base.append("【模型与图表数据】")
+        knowledge_base.append(f"- 有效数据点：{model_info['sample_count']} 个")
+        knowledge_base.append(f"- 点数范围：{model_info['x_min']} ~ {model_info['x_max']} 点")
+        knowledge_base.append(f"- 工时范围：{model_info['y_min']:.2f} ~ {model_info['y_max']:.2f} 秒")
+        knowledge_base.append(f"- 点数平均值：{model_info['x_mean']:.2f} 点")
+        knowledge_base.append(f"- 工时平均值：{model_info['y_mean']:.2f} 秒")
+        knowledge_base.append(f"- 点数标准差：{model_info['x_std']:.2f}")
+        knowledge_base.append(f"- 工时标准差：{model_info['y_std']:.2f}")
+        knowledge_base.append("")
         
-        if target_points is not None and target_points > 0:
-            X = np.array([[target_points]])
-            X_poly = model_info['poly'].transform(X)
-            pred_time = model_info['model'].predict(X_poly)[0]
-            lower_bound = pred_time * (1 - model_info['mape'] / 100)
-            upper_bound = pred_time * (1 + model_info['mape'] / 100)
-        else:
-            target_points = None
-            pred_time = None
-            lower_bound = None
-            upper_bound = None
+        knowledge_base.append("【拟合曲线评估指标】")
+        knowledge_base.append(f"- R²（决定系数）：{model_info['r2']:.4f}")
+        knowledge_base.append(f"- MAPE（平均绝对百分比误差）：{model_info['mape']:.2f}%")
+        knowledge_base.append(f"- MAE（平均绝对误差）：{model_info['mae']:.2f} 秒")
+        knowledge_base.append("")
         
-        data_summary = f"""
-【对比图数据】
-- 数据点：{model_info['sample_count']} 个
-- 点数范围：{model_info['x_min']} ~ {model_info['x_max']} 点
-- 工时范围：{model_info['y_min']:.1f} ~ {model_info['y_max']:.1f} 秒
-- R²：{model_info['r2']:.3f}
-- MAPE：{model_info['mape']:.1f}%
-- MAE：{model_info['mae']:.2f} 秒
-        """
+        # 数据分布统计
+        knowledge_base.append("【数据分布统计】")
+        quantiles = df['单板点数'].quantile([0.25, 0.5, 0.75])
+        knowledge_base.append(f"- 点数 Q1(25%)：{quantiles[0.25]:.0f} 点")
+        knowledge_base.append(f"- 点数 Q2(50%)中位数：{quantiles[0.5]:.0f} 点")
+        knowledge_base.append(f"- 点数 Q3(75%)：{quantiles[0.75]:.0f} 点")
         
-        if target_points is not None and pred_time is not None:
-            system_prompt = f"""你是SMT工时预测数据分析助手，只基于对比图数据进行分析。
+        quantiles_y = df['标准工时'].quantile([0.25, 0.5, 0.75])
+        knowledge_base.append(f"- 工时 Q1(25%)：{quantiles_y[0.25]:.2f} 秒")
+        knowledge_base.append(f"- 工时 Q2(50%)中位数：{quantiles_y[0.5]:.2f} 秒")
+        knowledge_base.append(f"- 工时 Q3(75%)：{quantiles_y[0.75]:.2f} 秒")
+        knowledge_base.append("")
+    
+    # 3. 预测结果（如果有）
+    if prediction_result is not None:
+        p = prediction_result
+        lower_bound = p['time'] * (1 - p['mape'] / 100)
+        upper_bound = p['time'] * (1 + p['mape'] / 100)
+        
+        knowledge_base.append("【当前预测结果】")
+        knowledge_base.append(f"- 输入点数：{p['points']} 点")
+        knowledge_base.append(f"- 预测工时：{p['time']:.2f} 秒")
+        knowledge_base.append(f"- 预测范围（±MAPE）：{lower_bound:.2f} ~ {upper_bound:.2f} 秒")
+        knowledge_base.append("")
+    
+    # 4. 图表描述
+    if models is not None and 'smt' in models:
+        model_info = models['smt']
+        knowledge_base.append("【图表说明】")
+        knowledge_base.append("- X轴：单板点数（pts）")
+        knowledge_base.append("- Y轴：标准工时（秒）")
+        knowledge_base.append("- 蓝色散点：原始数据点")
+        knowledge_base.append("- 红色曲线：二次多项式拟合曲线")
+        if prediction_result is not None:
+            knowledge_base.append("- 红色大点：当前预测点")
+        knowledge_base.append("")
+    
+    # 组合成完整的知识库
+    full_knowledge = "\n".join(knowledge_base)
+    
+    # ========== 构建系统提示 ==========
+    if models is not None and 'smt' in models:
+        system_prompt = f"""你是SMT工时预测数据分析专家，拥有纵览全局的权限。
 
-【数据】
-{data_summary}
+【全局知识库 - 你掌握的所有信息】
+{full_knowledge}
 
-用户输入了 {target_points} 点，预测工时为 {pred_time:.2f} 秒，范围 {lower_bound:.2f} ~ {upper_bound:.2f} 秒。
+【分析规则】
+1. 你可以使用上述所有信息进行分析和思考
+2. 每一步分析都要基于知识库中的数据
+3. 如果需要查看具体数据点，可以引用知识库中的统计信息
+4. 分析要逻辑清晰、层次分明
+5. 不要使用"行业基准"等没有数据依据的词汇
 
-请使用Markdown格式输出，让内容在屏幕上自适应排版。按以下格式输出：
+【输出格式】
+请使用Markdown格式输出，结构清晰。
 
----
+如果用户输入了具体点数，请先给出预测结果，然后进行深入分析。
+如果用户没有输入点数，请提示用户输入点数进行预测。
 
-**📊 预测结果**
+分析时可以参考：
+- 数据分布特征（范围、平均值、中位数）
+- 拟合曲线质量（R²、MAPE、MAE）
+- 当前预测点在数据分布中的位置
+- 预测结果的可信度
 
-> 输入 {target_points} 点 → 预测 **{pred_time:.2f}** 秒（范围 {lower_bound:.2f} ~ {upper_bound:.2f} 秒）
-
----
-
-**📈 数据解读**
-
-- 散点图显示...
-- 拟合曲线...
-- R² = {model_info['r2']:.3f}，...
-- MAPE = {model_info['mape']:.1f}%，...
-- MAE = {model_info['mae']:.2f}秒，...
-
----
-
-**📌 总结**
-
-本次预测结果...，预测工时 **{pred_time:.2f}** 秒。"""
-        else:
-            system_prompt = f"""你是SMT工时预测数据分析助手，只基于对比图数据进行分析。
-
-【数据】
-{data_summary}
-
-请使用Markdown格式，提示用户输入具体点数（如 100），以便基于拟合曲线给出预测。"""
+请开始分析。"""
     else:
-        system_prompt = "你是SMT工时预测数据分析助手。当前没有数据，请提示用户上传Excel文件。"
+        system_prompt = """你是SMT工时预测数据分析助手。
+
+当前没有数据。请提示用户：
+1. 上传Excel数据文件（包含：单板点数、标准工时两列）
+2. 或者检查数据是否已正确上传
+
+请用友好、专业的方式引导用户。"""
 
     messages = [{"role": "system", "content": system_prompt}]
     chat_history = st.session_state.messages[-20:] if st.session_state.messages else []
@@ -279,8 +321,8 @@ def chat_with_ai(user_message, models=None, line_type="SMT"):
     payload = {
         "model": "deepseek-ai/DeepSeek-V3",
         "messages": messages,
-        "temperature": 0.1,
-        "max_tokens": 1500
+        "temperature": 0.2,
+        "max_tokens": 2000
     }
 
     try:
@@ -317,7 +359,6 @@ smt_df = load_smt_data()
 if smt_df is not None and len(smt_df) > 0:
     st.session_state.df_raw = smt_df
     st.session_state.models = train_models(smt_df)
-    # 生成基础图表并存储
     if st.session_state.models is not None and 'smt' in st.session_state.models:
         st.session_state.chart_fig = create_chart(st.session_state.models)
 
@@ -358,8 +399,7 @@ with st.sidebar:
                 save_smt_data(df_raw)
                 st.session_state.models = train_models(df_raw)
                 st.session_state.df_raw = df_raw
-                st.session_state.last_prediction_result = None  # 清除预测结果
-                # 生成新图表
+                st.session_state.last_prediction_result = None
                 if st.session_state.models is not None and 'smt' in st.session_state.models:
                     st.session_state.chart_fig = create_chart(st.session_state.models)
                 st.success(f"✅ 已上传，共 {len(df_raw)} 行")
@@ -407,9 +447,7 @@ with left_col:
             st.markdown("### 📈 散点图与拟合曲线")
             plot_placeholder = st.empty()
             
-            # 判断是否需要更新图表
             if st.session_state.last_prediction_result is not None:
-                # 有预测结果，生成带预测点的图表
                 last = st.session_state.last_prediction_result
                 fig = create_chart(
                     models,
@@ -419,11 +457,9 @@ with left_col:
                 plot_placeholder.pyplot(fig, use_container_width=True)
                 plt.close(fig)
             else:
-                # 无预测结果，显示缓存的图表
                 if st.session_state.chart_fig is not None:
                     plot_placeholder.pyplot(st.session_state.chart_fig, use_container_width=True)
                 else:
-                    # 如果没有缓存，生成新的
                     fig = create_chart(models)
                     st.session_state.chart_fig = fig
                     plot_placeholder.pyplot(fig, use_container_width=True)
@@ -483,13 +519,13 @@ with right_col:
             """, unsafe_allow_html=True)
 
 # ============================================================
-# 第二行：AI分析
+# 第二行：AI分析 - 纵览全局
 # ============================================================
 st.markdown("---")
 
 with st.container():
     st.markdown("<h3 style='text-align: center;'>💬 AI 分 析</h3>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center; color: #888; font-size: 0.85rem;'>基于对比图（散点图与拟合曲线）的数据分析</p>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: #888; font-size: 0.85rem;'>AI拥有完整权限：可读取原始数据、图表、模型指标和预测结果</p>", unsafe_allow_html=True)
     
     chat_container = st.container(height=400)
     with chat_container:
@@ -514,7 +550,12 @@ with st.container():
         save_chat_history(st.session_state.messages)
         
         with st.spinner("分析中..."):
-            response = chat_with_ai(user_input, st.session_state.models)
+            response = chat_with_ai(
+                user_input, 
+                models=st.session_state.models,
+                prediction_result=st.session_state.last_prediction_result,
+                df_raw=st.session_state.df_raw
+            )
         
         st.session_state.messages.append({"role": "assistant", "content": response})
         save_chat_history(st.session_state.messages)
