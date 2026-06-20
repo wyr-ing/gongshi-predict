@@ -156,17 +156,16 @@ def predict_time(points, models=None):
     }
 
 # ============================================================
-# 绘图 - 缓存图表，避免重复生成
+# 绘图函数 - 返回figure对象
 # ============================================================
-@st.cache_data
-def generate_chart(_models, points=None, predicted_time=None, line_type="SMT"):
-    """生成图表并缓存，避免点击预测时重新生成"""
+def create_chart(models, points=None, predicted_time=None, line_type="SMT"):
+    """创建图表，返回figure对象"""
     screen = get_screen_size()
     
     fig, ax = plt.subplots(figsize=(screen['fig_width'], screen['fig_height']), dpi=100)
     
-    if 'smt' in _models:
-        model_info = _models['smt']
+    if 'smt' in models:
+        model_info = models['smt']
         df = model_info['data']
         x = df['单板点数']
         y = df['标准工时']
@@ -197,7 +196,7 @@ def generate_chart(_models, points=None, predicted_time=None, line_type="SMT"):
     return fig
 
 # ============================================================
-# AI对话 - 使用Markdown格式，自适应排版
+# AI对话
 # ============================================================
 def chat_with_ai(user_message, models=None, line_type="SMT"):
     headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
@@ -301,7 +300,7 @@ def hash_password(password):
 if "messages" not in st.session_state:
     st.session_state.messages = load_chat_history()
 
-for key in ['models', 'df_raw', 'last_prediction', 'last_prediction_result', 'cached_fig']:
+for key in ['models', 'df_raw', 'last_prediction', 'last_prediction_result', 'chart_fig']:
     if key not in st.session_state:
         st.session_state[key] = None
 
@@ -318,9 +317,9 @@ smt_df = load_smt_data()
 if smt_df is not None and len(smt_df) > 0:
     st.session_state.df_raw = smt_df
     st.session_state.models = train_models(smt_df)
-    # 预生成基础图表缓存
+    # 生成基础图表并存储
     if st.session_state.models is not None and 'smt' in st.session_state.models:
-        st.session_state.cached_fig = generate_chart(st.session_state.models)
+        st.session_state.chart_fig = create_chart(st.session_state.models)
 
 # ============================================================
 # 侧边栏
@@ -359,9 +358,10 @@ with st.sidebar:
                 save_smt_data(df_raw)
                 st.session_state.models = train_models(df_raw)
                 st.session_state.df_raw = df_raw
-                # 更新缓存图表
+                st.session_state.last_prediction_result = None  # 清除预测结果
+                # 生成新图表
                 if st.session_state.models is not None and 'smt' in st.session_state.models:
-                    st.session_state.cached_fig = generate_chart(st.session_state.models)
+                    st.session_state.chart_fig = create_chart(st.session_state.models)
                 st.success(f"✅ 已上传，共 {len(df_raw)} 行")
                 st.rerun()
             else:
@@ -407,11 +407,11 @@ with left_col:
             st.markdown("### 📈 散点图与拟合曲线")
             plot_placeholder = st.empty()
             
-            # 使用缓存图表，避免重复生成
+            # 判断是否需要更新图表
             if st.session_state.last_prediction_result is not None:
+                # 有预测结果，生成带预测点的图表
                 last = st.session_state.last_prediction_result
-                # 生成带预测点的图表
-                fig = generate_chart(
+                fig = create_chart(
                     models,
                     points=last.get('points'),
                     predicted_time=last.get('time')
@@ -419,16 +419,14 @@ with left_col:
                 plot_placeholder.pyplot(fig, use_container_width=True)
                 plt.close(fig)
             else:
-                # 使用缓存的图表
-                if st.session_state.cached_fig is not None:
-                    plot_placeholder.pyplot(st.session_state.cached_fig, use_container_width=True)
-                    plt.close(st.session_state.cached_fig)
+                # 无预测结果，显示缓存的图表
+                if st.session_state.chart_fig is not None:
+                    plot_placeholder.pyplot(st.session_state.chart_fig, use_container_width=True)
                 else:
                     # 如果没有缓存，生成新的
-                    fig = generate_chart(models)
-                    st.session_state.cached_fig = fig
+                    fig = create_chart(models)
+                    st.session_state.chart_fig = fig
                     plot_placeholder.pyplot(fig, use_container_width=True)
-                    plt.close(fig)
     else:
         st.info("👈 请上传数据")
 
