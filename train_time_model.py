@@ -35,7 +35,7 @@ API_KEY = "sk-fvxkdwbhjcokafftooavzvedrlmmrffotehplsnfnjupogqb"
 BASE_URL = "https://api.siliconflow.cn/v1"
 
 # ============================================================
-# 屏幕自适应（保留完整功能）
+# 屏幕自适应
 # ============================================================
 def get_screen_size():
     try:
@@ -150,7 +150,7 @@ def predict_time(points, models=None):
     }
 
 # ============================================================
-# 绘图（使用自适应尺寸）
+# 绘图
 # ============================================================
 def plot_chart(models, points=None, predicted=None, line_type="SMT"):
     
@@ -190,7 +190,7 @@ def plot_chart(models, points=None, predicted=None, line_type="SMT"):
     return fig
 
 # ============================================================
-# AI对话 - 严格基于数据和预测结果，不说瞎话
+# AI对话 - 严格基于SMT工时预测模块的输出
 # ============================================================
 def chat_with_ai(user_message, prediction_result=None, line_type="SMT"):
     headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
@@ -201,52 +201,63 @@ def chat_with_ai(user_message, prediction_result=None, line_type="SMT"):
         lower_bound = p['time'] * (1 - p['mape'] / 100)
         upper_bound = p['time'] * (1 + p['mape'] / 100)
         
+        # 构建与SMT工时预测模块完全一致的输出
         result_summary = f"""
-【基于数据的预测结果】
-📌 输入点数：{p['points']} 点
-📌 预测标准工时：{p['time']:.2f} 秒
-📌 预测范围（±MAPE）：{lower_bound:.2f} ~ {upper_bound:.2f} 秒
+【SMT工时预测模块输出 - 与界面显示完全一致】
 
-【模型拟合指标】（基于您上传的真实数据计算）
-📊 R²（决定系数）：{p['r2']:.3f} 
-   → 表示模型能解释 {p['r2']*100:.1f}% 的数据变化，数值越接近1拟合越好
-📊 MAPE（平均绝对百分比误差）：{p['mape']:.1f}%
-   → 表示预测值与实际值的平均偏差比例
-📊 MAE（平均绝对误差）：{p['mae']:.2f} 秒
-   → 表示预测值与实际值的平均绝对偏差
+📌 预测结果
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  • 输入点数：{p['points']} 点
+  • 预测标准工时：{p['time']:.2f} 秒
+  • 预测范围（±MAPE）：{lower_bound:.2f} ~ {upper_bound:.2f} 秒
+
+📊 模型评估指标（基于您上传的真实数据计算）
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  • R²（决定系数）：{p['r2']:.3f}
+  • MAPE（平均绝对百分比误差）：{p['mape']:.1f}%
+  • MAE（平均绝对误差）：{p['mae']:.2f} 秒
+
+📈 图表信息
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  • 数据点数量：{st.session_state.models['smt']['sample_count']} 个
+  • 拟合曲线：二次多项式回归
+  • 红色标记为当前预测点
         """
         
-        system_prompt = f"""你是{line_type}产线工时预测数据分析助手。
+        system_prompt = f"""你是SMT工时预测数据分析助手。
 
-【重要规则 - 必须严格遵守】：
-1. 只基于下面【基于数据的预测结果】中给出的数据进行解读
-2. 不要说任何"行业基准"、"行业标准"、"通常来说"、"一般认为"等没有数据依据的内容
-3. 不要做任何超出数据范围的推测
-4. 不要给出任何"优化建议"或"改进建议"，除非数据本身直接支持
-5. 只做数据解读和结果说明
+【核心规则 - 必须100%遵守】：
+1. 你只能基于上面的【SMT工时预测模块输出】中的数据进行分析
+2. 这个输出与界面上的"预测结果"卡片完全一致，是唯一的数据来源
+3. 不要说任何不在这个输出中的内容
+4. 禁止使用："行业基准"、"行业标准"、"通常"、"一般"、"应该"等词汇
+5. 禁止给出"优化建议"、"改进建议"等超出数据范围的内容
+6. 分析必须从图表（散点图+拟合曲线）的视觉角度出发
 
 {result_summary}
 
 请按以下格式输出（严格遵循，不要添加额外内容）：
 
-【预测结果】
-- 输入点数：{p['points']} 点
-- 预测工时：{p['time']:.2f} 秒
-- 预测范围：{lower_bound:.2f} ~ {upper_bound:.2f} 秒
+【预测结果确认】
+输入 {p['points']} 点，预测工时 {p['time']:.2f} 秒，范围 {lower_bound:.2f} ~ {upper_bound:.2f} 秒
 
-【数据解读】
-（基于R²、MAPE、MAE三个指标，说明模型拟合程度和预测可信度，每个指标用1-2句话说明）
+【基于图表的分析】
+- 从散点图来看，数据点分布趋势是...（观察数据点是否集中在拟合曲线附近）
+- 拟合曲线显示，点数与工时的关系是...（描述曲线走势）
+- 当前预测点位于曲线的...位置
+
+【数据可信度评估】
+- R²={p['r2']:.3f}，说明模型能解释 {p['r2']*100:.1f}% 的数据变化
+- MAPE={p['mape']:.1f}%，预测偏差范围在 ±{p['mape']:.1f}% 内
+- MAE={p['mae']:.2f}秒，平均偏差约 {p['mae']:.2f} 秒
 
 【总结】
-（用1-2句话总结这个预测结果是否可信，基于什么依据）
-
-注意：不要添加任何没有数据支持的内容，不要使用"行业基准"等词汇。"""
+基于以上数据，本次预测结果（可信/基本可信/需谨慎），预测工时 {p['time']:.2f} 秒，范围 {lower_bound:.2f} ~ {upper_bound:.2f} 秒。"""
         
         user_message = "请分析预测结果"
     else:
-        system_prompt = f"""你是{line_type}产线工时预测数据分析助手。
-
-请提示用户输入点数进行预测。只说必要的内容，不要添加多余信息。"""
+        system_prompt = f"""你是SMT工时预测数据分析助手。
+请提示用户先进行预测，然后再提问分析。只说必要的内容，不要添加多余信息。"""
 
     messages = [{"role": "system", "content": system_prompt}]
     chat_history = st.session_state.messages[-20:] if st.session_state.messages else []
@@ -257,7 +268,7 @@ def chat_with_ai(user_message, prediction_result=None, line_type="SMT"):
     payload = {
         "model": "deepseek-ai/DeepSeek-V3",
         "messages": messages,
-        "temperature": 0.3,  # 降低温度，减少随机性
+        "temperature": 0.1,  # 极低温度，确保输出稳定
         "max_tokens": 1500
     }
 
@@ -275,11 +286,9 @@ def hash_password(password):
 # ============================================================
 # 初始化会话状态
 # ============================================================
-# 加载聊天记录（持久化）
 if "messages" not in st.session_state:
     st.session_state.messages = load_chat_history()
 
-# 其他状态初始化
 for key in ['models', 'df_raw', 'last_prediction', 'last_prediction_result']:
     if key not in st.session_state:
         st.session_state[key] = None
@@ -365,7 +374,6 @@ with left_col:
         models = st.session_state.models
         model_info = models['smt']
         
-        # 模型评估
         with st.container():
             st.markdown("### 📊 模型评估")
             col1, col2, col3 = st.columns(3)
@@ -377,7 +385,6 @@ with left_col:
             with col3:
                 st.metric("MAE", f"{model_info['mae']:.2f}s")
         
-        # 对比图
         with st.container():
             st.markdown("### 📈 散点图与拟合曲线")
             plot_placeholder = st.empty()
@@ -399,7 +406,6 @@ with left_col:
         st.info("👈 请上传数据")
 
 with right_col:
-    # 工时预测
     with st.container():
         st.markdown("### 🎯 SMT工时预测")
         
@@ -418,9 +424,10 @@ with right_col:
             else:
                 st.error("请先上传数据")
         
-        # 显示预测结果
         if st.session_state.last_prediction_result is not None:
             result = st.session_state.last_prediction_result
+            lower_bound = result['time'] * (1 - result['mape'] / 100)
+            upper_bound = result['time'] * (1 + result['mape'] / 100)
             
             st.markdown(f"""
             <div style="background: linear-gradient(135deg, #e8f5e9, #c8e6c9); 
@@ -432,6 +439,9 @@ with right_col:
                             {result['time']:.1f}s
                         </div>
                         <span style="color: #666; font-size: 0.8rem;">标准工时</span>
+                        <div style="font-size: 0.75rem; color: #888; margin-top: 2px;">
+                            范围: {lower_bound:.1f} ~ {upper_bound:.1f} s
+                        </div>
                     </div>
                     <div style="text-align: right;">
                         <span style="color: #666; font-size: 0.8rem;">点位数</span>
@@ -448,13 +458,13 @@ with right_col:
             """, unsafe_allow_html=True)
 
 # ============================================================
-# 第二行：AI分析（全宽，标题居中，对话框横向拉长）
+# 第二行：AI分析
 # ============================================================
 st.markdown("---")
 
 with st.container():
     st.markdown("<h3 style='text-align: center;'>💬 AI 分 析</h3>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center; color: #888; font-size: 0.85rem;'>输入点数或提问，AI会先显示预测结果，再给出专业分析</p>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: #888; font-size: 0.85rem;'>基于预测结果和图表数据的专业分析</p>", unsafe_allow_html=True)
     
     chat_container = st.container(height=350)
     with chat_container:
