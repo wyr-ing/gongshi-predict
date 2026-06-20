@@ -30,7 +30,7 @@ plt.rcParams['axes.unicode_minus'] = False
 # 配置
 # ============================================================
 DATA_FILE_SMT = "smt_data.xlsx"
-CHAT_HISTORY_FILE = "chat_history.json"  # 聊天记录保存文件
+CHAT_HISTORY_FILE = "chat_history.json"
 API_KEY = "sk-fvxkdwbhjcokafftooavzvedrlmmrffotehplsnfnjupogqb"
 BASE_URL = "https://api.siliconflow.cn/v1"
 
@@ -60,7 +60,6 @@ def get_screen_size():
 # 聊天记录持久化
 # ============================================================
 def load_chat_history():
-    """从文件加载聊天记录"""
     if os.path.exists(CHAT_HISTORY_FILE):
         try:
             with open(CHAT_HISTORY_FILE, 'r', encoding='utf-8') as f:
@@ -70,7 +69,6 @@ def load_chat_history():
     return []
 
 def save_chat_history(messages):
-    """保存聊天记录到文件"""
     try:
         with open(CHAT_HISTORY_FILE, 'w', encoding='utf-8') as f:
             json.dump(messages, f, ensure_ascii=False, indent=2)
@@ -78,7 +76,6 @@ def save_chat_history(messages):
         pass
 
 def clear_chat_history():
-    """清空聊天记录"""
     if os.path.exists(CHAT_HISTORY_FILE):
         os.remove(CHAT_HISTORY_FILE)
     return []
@@ -128,7 +125,11 @@ def train_models(df):
             'mae': mean_absolute_error(y, y_pred),
             'mape': np.mean(np.abs((y - y_pred) / y)) * 100,
             'data': df_clean,
-            'sample_count': len(df_clean)
+            'sample_count': len(df_clean),
+            'y_min': y.min(),
+            'y_max': y.max(),
+            'x_min': X.min()[0],
+            'x_max': X.max()[0]
         }
     
     return models
@@ -149,7 +150,11 @@ def predict_time(points, models=None):
         'time': pred,
         'r2': models['smt']['r2'],
         'mape': models['smt']['mape'],
-        'mae': models['smt']['mae']
+        'mae': models['smt']['mae'],
+        'y_min': models['smt']['y_min'],
+        'y_max': models['smt']['y_max'],
+        'x_min': models['smt']['x_min'],
+        'x_max': models['smt']['x_max']
     }
 
 # ============================================================
@@ -193,41 +198,88 @@ def plot_chart(models, points=None, predicted=None, line_type="SMT"):
     return fig
 
 # ============================================================
-# AI对话
+# AI对话 - 严格基于数据和预测结果
 # ============================================================
 def chat_with_ai(user_message, prediction_result=None, line_type="SMT"):
     headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
 
     if prediction_result:
         p = prediction_result
+        points = p['points']
+        pred_time = p['time']
+        r2 = p['r2']
+        mape = p['mape']
+        mae = p['mae']
+        lower_bound = pred_time * (1 - mape/100)
+        upper_bound = pred_time * (1 + mape/100)
+        
+        # 获取数据范围信息
+        data_points = len(st.session_state.models['smt']['data']) if st.session_state.models else 0
+        x_min = p.get('x_min', 0)
+        x_max = p.get('x_max', 0)
+        y_min = p.get('y_min', 0)
+        y_max = p.get('y_max', 0)
+        
         result_summary = f"""
 【预测结果】
-📌 单板点数：{p['points']} 点
-预测标准工时：{p['time']:.2f} 秒
-模型R²：{p['r2']:.3f}
-模型MAPE：{p['mape']:.1f}%
-模型MAE：{p['mae']:.2f} 秒
+📌 输入点数：{points} 点
+📌 预测标准工时：{pred_time:.2f} 秒
+📌 预测范围（±MAPE）：{lower_bound:.2f} ~ {upper_bound:.2f} 秒
+
+【模型统计信息】
+📊 数据样本数：{data_points} 条
+📊 R²（决定系数）：{r2:.4f}
+📊 MAPE（平均百分比误差）：{mape:.2f}%
+📊 MAE（平均绝对误差）：{mae:.2f} 秒
+📊 训练数据点数范围：{x_min:.0f} ~ {x_max:.0f} 点
+📊 训练数据工时范围：{y_min:.2f} ~ {y_max:.2f} 秒
+
+【拟合曲线方程】
+工时 = a × 点数² + b × 点数 + c
+（基于二次多项式回归拟合）
         """
         
-        system_prompt = f"""你是{line_type}产线工时预测数据分析专家。
+        system_prompt = f"""你是{line_type}产线工时预测数据分析助手。
+
+你的任务：**严格基于以下数据和预测结果**进行分析，不要引入任何行业基准、外部标准或猜测性内容。
 
 {result_summary}
 
-请按以下格式输出：
-1. 首先确认预测结果（复述上面的数据）
-2. 分析这个预测是否合理（结合R²和MAPE评估模型可信度）
-3. 给出工时范围建议（预测值 ± MAPE 范围）
-4. 给出2-3条优化建议
+请按以下格式输出（只输出以下内容，不要添加额外内容）：
 
-注意：输出要清晰、专业、有层次。"""
+---
+**【预测结果确认】**
+- 输入点数：{points} 点
+- 预测工时：{pred_time:.2f} 秒
+- 合理范围：{lower_bound:.2f} ~ {upper_bound:.2f} 秒（基于MAPE±{mape:.2f}%）
+
+**【模型可信度分析】**
+- R² = {r2:.4f}，说明模型能解释约 {r2*100:.1f}% 的数据变异
+- MAPE = {mape:.2f}%，平均预测偏差约 {mape:.2f}%
+- MAE = {mae:.2f} 秒，平均绝对误差约 {mae:.2f} 秒
+- 数据样本量：{data_points} 条
+
+**【本次预测合理性判断】**
+- 输入点数 {points} 点 位于训练数据范围 {x_min:.0f}~{x_max:.0f} 点 的 {'**内部**（预测可信度较高）' if x_min <= points <= x_max else '**外部**（预测为外推，可信度降低）'}
+- 预测工时 {pred_time:.2f} 秒 位于训练数据工时范围 {y_min:.2f}~{y_max:.2f} 秒 的 {'**内部**' if y_min <= pred_time <= y_max else '**外部**'}
+
+**【结论】**
+基于本次预测和模型统计，{points} 点位的标准工时预测值为 {pred_time:.2f} 秒，预计实际工时在 {lower_bound:.2f}~{upper_bound:.2f} 秒范围内。
+---
+"""
         
-        user_message = "请分析预测结果"
+        user_message = "请基于预测结果进行分析"
     else:
-        system_prompt = f"你是{line_type}产线工时预测数据分析专家。请提示用户输入点数进行预测。"
+        system_prompt = f"""你是{line_type}产线工时预测数据分析助手。
 
-    # 使用保存的聊天记录（最多保留最近20条）
+请提示用户先进行预测再进行分析。如果用户输入了点数，引导用户点击"预测"按钮获取结果。
+不要引入任何行业基准、外部标准或猜测性内容。
+"""
+        user_message = user_message
+
+    # 使用保存的聊天记录（最多保留最近10条）
     messages = [{"role": "system", "content": system_prompt}]
-    chat_history = st.session_state.messages[-20:] if st.session_state.messages else []
+    chat_history = st.session_state.messages[-10:] if st.session_state.messages else []
     for msg in chat_history:
         messages.append(msg)
     messages.append({"role": "user", "content": user_message})
@@ -235,8 +287,8 @@ def chat_with_ai(user_message, prediction_result=None, line_type="SMT"):
     payload = {
         "model": "deepseek-ai/DeepSeek-V3",
         "messages": messages,
-        "temperature": 0.7,
-        "max_tokens": 2000
+        "temperature": 0.3,  # 降低温度，让输出更稳定
+        "max_tokens": 1500
     }
 
     try:
@@ -253,11 +305,9 @@ def hash_password(password):
 # ============================================================
 # 初始化会话状态
 # ============================================================
-# 加载聊天记录（持久化）
 if "messages" not in st.session_state:
     st.session_state.messages = load_chat_history()
 
-# 其他状态初始化
 for key in ['models', 'df_raw', 'last_prediction', 'last_prediction_result']:
     if key not in st.session_state:
         st.session_state[key] = None
@@ -430,49 +480,45 @@ with right_col:
 # ============================================================
 st.markdown("---")
 
-# 使用全宽容器
 with st.container():
-    # AI分析标题居中
     st.markdown("<h3 style='text-align: center;'>💬 AI 分 析</h3>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center; color: #888; font-size: 0.85rem;'>输入点数或提问，AI会先显示预测结果，再给出专业分析</p>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: #888; font-size: 0.85rem;'>先进行预测，然后输入问题让AI分析预测结果</p>", unsafe_allow_html=True)
     
-    # 对话框 - 使用全宽
     chat_container = st.container(height=350)
     with chat_container:
-        # 显示所有聊天记录
         for msg in st.session_state.messages:
             if msg["role"] == "user":
                 st.chat_message("user").write(msg["content"])
             elif msg["role"] == "assistant":
                 st.chat_message("assistant").write(msg["content"])
     
-    # 输入框和清空按钮
     col_input, col_btn = st.columns([6, 1])
     
     with col_input:
-        user_input = st.chat_input("输入点数（如 100）或提问...", key="ai_chat_input")
+        user_input = st.chat_input("输入点数（如 100）或直接提问...", key="ai_chat_input")
     
     with col_btn:
         if st.button("🗑️ 清空对话", use_container_width=True, key="clear_chat_btn"):
             st.session_state.messages = clear_chat_history()
             st.rerun()
     
-    # 处理用户输入
     if user_input:
-        # 添加用户消息
         st.session_state.messages.append({"role": "user", "content": user_input})
-        save_chat_history(st.session_state.messages)  # 立即保存
+        save_chat_history(st.session_state.messages)
         
         numbers = re.findall(r'\d+', user_input)
         
         with st.spinner("分析中..."):
+            # 如果有预测结果且用户输入了数字，使用预测结果进行分析
             if st.session_state.last_prediction_result is not None and numbers:
+                response = chat_with_ai(user_input, st.session_state.last_prediction_result)
+            elif st.session_state.last_prediction_result is not None:
+                # 用户输入了非数字内容，但仍传递预测结果供参考
                 response = chat_with_ai(user_input, st.session_state.last_prediction_result)
             else:
                 response = chat_with_ai(user_input, None)
         
-        # 添加AI回复
         st.session_state.messages.append({"role": "assistant", "content": response})
-        save_chat_history(st.session_state.messages)  # 保存更新
+        save_chat_history(st.session_state.messages)
         
         st.rerun()
