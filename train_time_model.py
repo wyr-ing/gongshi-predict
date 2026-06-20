@@ -133,14 +133,13 @@ def get_data_density_zones(df, column='单板点数'):
     
     return zones
 
-def create_density_chart(models):
+def create_density_chart(model_info):
     """创建数据分布密度图"""
     screen = get_screen_size()
     
     fig, ax = plt.subplots(figsize=(screen['fig_width'], screen['fig_height'] * 0.6), dpi=100)
     
-    if 'smt' in models:
-        model_info = models['smt']
+    if model_info is not None:
         df = model_info['data']
         x = df['单板点数']
         
@@ -164,24 +163,23 @@ def create_density_chart(models):
     return fig
 
 # ============================================================
-# 多模型训练
+# 多模型训练 - 只保留适合的模型
 # ============================================================
-def train_multiple_models(df):
-    """训练多个模型"""
-    models = {}
+def train_and_select_best_model(df):
+    """训练多个模型，自动选择最适合的"""
     
     df_clean = df.dropna(subset=['单板点数', '标准工时'])
     df_clean = df_clean[(df_clean['单板点数'] > 0) & (df_clean['标准工时'] > 0)]
     
     if len(df_clean) < 3:
-        return models
+        return None, None
     
     X = df_clean[['单板点数']].values
     y = df_clean['标准工时'].values
     
-    results = []
+    candidates = []
     
-    # 1. 多项式回归（2次）- 默认模型
+    # 1. 多项式回归（2次）
     try:
         poly = PolynomialFeatures(degree=2)
         X_poly = poly.fit_transform(X)
@@ -191,34 +189,42 @@ def train_multiple_models(df):
         r2 = r2_score(y, y_pred)
         mae = mean_absolute_error(y, y_pred)
         mape = np.mean(np.abs((y - y_pred) / y)) * 100
-        models['多项式回归(2次)'] = {
-            'model': model,
-            'poly': poly,
-            'scaler': None,
-            'r2': float(r2),
-            'mae': float(mae),
-            'mape': float(mape),
-            'data': df_clean,
-            'sample_count': len(df_clean),
-            'x_min': float(df_clean['单板点数'].min()),
-            'x_max': float(df_clean['单板点数'].max()),
-            'y_min': float(df_clean['标准工时'].min()),
-            'y_max': float(df_clean['标准工时'].max()),
-            'x_mean': float(df_clean['单板点数'].mean()),
-            'y_mean': float(df_clean['标准工时'].mean()),
-            'x_std': float(df_clean['单板点数'].std()),
-            'y_std': float(df_clean['标准工时'].std()),
-            'df_clean': df_clean,
-            'y_pred': y_pred,
-            'y_true': y,
-            'X': X,
-            'type': 'polynomial_2'
-        }
-        results.append(('多项式回归(2次)', r2, mae, mape))
+        
+        # 检查是否过拟合：使用交叉验证
+        cv_scores = cross_val_score(model, X_poly, y, cv=min(5, len(df_clean)))
+        cv_mean = np.mean(cv_scores)
+        
+        # 只有在R² > 0.7且交叉验证得分差距不大时才保留
+        if r2 > 0.7 and (r2 - cv_mean) < 0.2:
+            candidates.append({
+                'name': '多项式回归(2次)',
+                'model': model,
+                'poly': poly,
+                'scaler': None,
+                'r2': float(r2),
+                'mae': float(mae),
+                'mape': float(mape),
+                'cv_mean': float(cv_mean),
+                'data': df_clean,
+                'sample_count': len(df_clean),
+                'x_min': float(df_clean['单板点数'].min()),
+                'x_max': float(df_clean['单板点数'].max()),
+                'y_min': float(df_clean['标准工时'].min()),
+                'y_max': float(df_clean['标准工时'].max()),
+                'x_mean': float(df_clean['单板点数'].mean()),
+                'y_mean': float(df_clean['标准工时'].mean()),
+                'x_std': float(df_clean['单板点数'].std()),
+                'y_std': float(df_clean['标准工时'].std()),
+                'df_clean': df_clean,
+                'y_pred': y_pred,
+                'y_true': y,
+                'X': X,
+                'type': 'polynomial_2'
+            })
     except:
         pass
     
-    # 2. 多项式回归（3次）
+    # 2. 多项式回归（3次）- 防止过拟合
     try:
         poly = PolynomialFeatures(degree=3)
         X_poly = poly.fit_transform(X)
@@ -228,34 +234,41 @@ def train_multiple_models(df):
         r2 = r2_score(y, y_pred)
         mae = mean_absolute_error(y, y_pred)
         mape = np.mean(np.abs((y - y_pred) / y)) * 100
-        models['多项式回归(3次)'] = {
-            'model': model,
-            'poly': poly,
-            'scaler': None,
-            'r2': float(r2),
-            'mae': float(mae),
-            'mape': float(mape),
-            'data': df_clean,
-            'sample_count': len(df_clean),
-            'x_min': float(df_clean['单板点数'].min()),
-            'x_max': float(df_clean['单板点数'].max()),
-            'y_min': float(df_clean['标准工时'].min()),
-            'y_max': float(df_clean['标准工时'].max()),
-            'x_mean': float(df_clean['单板点数'].mean()),
-            'y_mean': float(df_clean['标准工时'].mean()),
-            'x_std': float(df_clean['单板点数'].std()),
-            'y_std': float(df_clean['标准工时'].std()),
-            'df_clean': df_clean,
-            'y_pred': y_pred,
-            'y_true': y,
-            'X': X,
-            'type': 'polynomial_3'
-        }
-        results.append(('多项式回归(3次)', r2, mae, mape))
+        
+        cv_scores = cross_val_score(model, X_poly, y, cv=min(5, len(df_clean)))
+        cv_mean = np.mean(cv_scores)
+        
+        # 3次多项式容易过拟合，提高筛选标准
+        if r2 > 0.75 and (r2 - cv_mean) < 0.15:
+            candidates.append({
+                'name': '多项式回归(3次)',
+                'model': model,
+                'poly': poly,
+                'scaler': None,
+                'r2': float(r2),
+                'mae': float(mae),
+                'mape': float(mape),
+                'cv_mean': float(cv_mean),
+                'data': df_clean,
+                'sample_count': len(df_clean),
+                'x_min': float(df_clean['单板点数'].min()),
+                'x_max': float(df_clean['单板点数'].max()),
+                'y_min': float(df_clean['标准工时'].min()),
+                'y_max': float(df_clean['标准工时'].max()),
+                'x_mean': float(df_clean['单板点数'].mean()),
+                'y_mean': float(df_clean['标准工时'].mean()),
+                'x_std': float(df_clean['单板点数'].std()),
+                'y_std': float(df_clean['标准工时'].std()),
+                'df_clean': df_clean,
+                'y_pred': y_pred,
+                'y_true': y,
+                'X': X,
+                'type': 'polynomial_3'
+            })
     except:
         pass
     
-    # 3. Ridge回归
+    # 3. Ridge回归 - 适合处理过拟合
     try:
         poly = PolynomialFeatures(degree=2)
         X_poly = poly.fit_transform(X)
@@ -267,89 +280,51 @@ def train_multiple_models(df):
         r2 = r2_score(y, y_pred)
         mae = mean_absolute_error(y, y_pred)
         mape = np.mean(np.abs((y - y_pred) / y)) * 100
-        models['Ridge回归'] = {
-            'model': model,
-            'poly': poly,
-            'scaler': scaler,
-            'r2': float(r2),
-            'mae': float(mae),
-            'mape': float(mape),
-            'data': df_clean,
-            'sample_count': len(df_clean),
-            'x_min': float(df_clean['单板点数'].min()),
-            'x_max': float(df_clean['单板点数'].max()),
-            'y_min': float(df_clean['标准工时'].min()),
-            'y_max': float(df_clean['标准工时'].max()),
-            'x_mean': float(df_clean['单板点数'].mean()),
-            'y_mean': float(df_clean['标准工时'].mean()),
-            'x_std': float(df_clean['单板点数'].std()),
-            'y_std': float(df_clean['标准工时'].std()),
-            'df_clean': df_clean,
-            'y_pred': y_pred,
-            'y_true': y,
-            'X': X,
-            'type': 'ridge'
-        }
-        results.append(('Ridge回归', r2, mae, mape))
+        
+        cv_scores = cross_val_score(model, X_scaled, y, cv=min(5, len(df_clean)))
+        cv_mean = np.mean(cv_scores)
+        
+        if r2 > 0.7 and (r2 - cv_mean) < 0.2:
+            candidates.append({
+                'name': 'Ridge回归',
+                'model': model,
+                'poly': poly,
+                'scaler': scaler,
+                'r2': float(r2),
+                'mae': float(mae),
+                'mape': float(mape),
+                'cv_mean': float(cv_mean),
+                'data': df_clean,
+                'sample_count': len(df_clean),
+                'x_min': float(df_clean['单板点数'].min()),
+                'x_max': float(df_clean['单板点数'].max()),
+                'y_min': float(df_clean['标准工时'].min()),
+                'y_max': float(df_clean['标准工时'].max()),
+                'x_mean': float(df_clean['单板点数'].mean()),
+                'y_mean': float(df_clean['标准工时'].mean()),
+                'x_std': float(df_clean['单板点数'].std()),
+                'y_std': float(df_clean['标准工时'].std()),
+                'df_clean': df_clean,
+                'y_pred': y_pred,
+                'y_true': y,
+                'X': X,
+                'type': 'ridge'
+            })
     except:
         pass
     
     # 选择最佳模型（按R²排序）
-    if results:
-        best = max(results, key=lambda x: x[1])
-        return {
-            'all_models': models,
-            'best_model_name': best[0],
-            'comparison': results
-        }
+    if candidates:
+        best = max(candidates, key=lambda x: x['r2'])
+        return best, candidates
     
-    return None
+    return None, []
 
 # ============================================================
-# 残差分析图
-# ============================================================
-def create_residual_plot(model_info, model_name):
-    """创建残差分析图"""
-    screen = get_screen_size()
-    
-    fig, axes = plt.subplots(1, 2, figsize=(screen['fig_width'], screen['fig_height'] * 0.8), dpi=100)
-    
-    y_true = model_info['y_true']
-    y_pred = model_info['y_pred']
-    residuals = y_true - y_pred
-    
-    # 子图1：残差 vs 预测值
-    ax1 = axes[0]
-    ax1.scatter(y_pred, residuals, color='#1f77b4', s=40, alpha=0.6)
-    ax1.axhline(y=0, color='red', linestyle='--', linewidth=2)
-    ax1.set_xlabel('Predicted Value (s)', fontsize=screen['font_size'])
-    ax1.set_ylabel('Residual (s)', fontsize=screen['font_size'])
-    ax1.set_title(f'Residuals vs Predicted\n{model_name}', fontsize=screen['title_size'])
-    ax1.grid(True, alpha=0.2)
-    
-    # 子图2：残差直方图
-    ax2 = axes[1]
-    ax2.hist(residuals, bins=20, color='#1f77b4', alpha=0.7, edgecolor='white', linewidth=1)
-    ax2.axvline(x=0, color='red', linestyle='--', linewidth=2)
-    ax2.set_xlabel('Residual (s)', fontsize=screen['font_size'])
-    ax2.set_ylabel('Frequency', fontsize=screen['font_size'])
-    ax2.set_title(f'Residual Distribution\n{model_name}', fontsize=screen['title_size'])
-    ax2.grid(True, alpha=0.2)
-    
-    # 显示统计信息
-    stats_text = f'Mean: {np.mean(residuals):.2f}s\nStd: {np.std(residuals):.2f}s'
-    ax2.text(0.95, 0.95, stats_text, transform=ax2.transAxes, 
-             verticalalignment='top', horizontalalignment='right',
-             bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
-    
-    plt.tight_layout()
-    return fig
-
-# ============================================================
-# 预测函数（使用指定模型）
+# 预测函数
 # ============================================================
 def predict_time_with_model(points, model_info):
-    """使用指定模型预测"""
+    """使用模型预测"""
     if model_info is None:
         return None
     
@@ -519,7 +494,7 @@ def agent_chat(user_message, model_info=None, prediction_result=None, df_raw=Non
     
     if model_info is not None:
         knowledge_base.append("【📈 模型信息】")
-        knowledge_base.append(f"- 模型类型：{st.session_state.selected_model}")
+        knowledge_base.append(f"- 模型类型：{model_info.get('name', '二次多项式回归')}")
         knowledge_base.append(f"- 有效数据点：{model_info['sample_count']} 个")
         knowledge_base.append(f"- R²：{model_info['r2']:.4f}")
         knowledge_base.append(f"- MAPE：{model_info['mape']:.2f}%")
@@ -605,21 +580,15 @@ for key in ['df_raw', 'last_prediction', 'last_prediction_result', 'chart_fig']:
         st.session_state[key] = None
 
 # 模型相关状态
-if "all_models" not in st.session_state:
-    st.session_state.all_models = None
-
-if "selected_model" not in st.session_state:
-    st.session_state.selected_model = "多项式回归(2次)"
-
 if "model_info" not in st.session_state:
     st.session_state.model_info = None
+
+if "all_candidates" not in st.session_state:
+    st.session_state.all_candidates = []
 
 # 控制数据分布图显示的状态
 if "show_density_chart" not in st.session_state:
     st.session_state.show_density_chart = False
-
-if "show_residual_plot" not in st.session_state:
-    st.session_state.show_residual_plot = False
 
 if "upload_authorized" not in st.session_state:
     st.session_state.upload_authorized = False
@@ -633,12 +602,11 @@ if "screen_width" not in st.session_state:
 smt_df = load_smt_data()
 if smt_df is not None and len(smt_df) > 0:
     st.session_state.df_raw = smt_df
-    st.session_state.all_models = train_multiple_models(smt_df)
-    if st.session_state.all_models is not None:
-        best_name = st.session_state.all_models['best_model_name']
-        st.session_state.selected_model = best_name
-        st.session_state.model_info = st.session_state.all_models['all_models'][best_name]
-        st.session_state.chart_fig = create_chart(st.session_state.model_info)
+    best_model, candidates = train_and_select_best_model(smt_df)
+    if best_model is not None:
+        st.session_state.model_info = best_model
+        st.session_state.all_candidates = candidates
+        st.session_state.chart_fig = create_chart(best_model)
 
 # ============================================================
 # 侧边栏
@@ -654,65 +622,21 @@ with st.sidebar:
     
     st.markdown("---")
     
-    # ========== 模型切换 ==========
-    st.markdown("#### 🔄 模型切换")
-    
-    if st.session_state.all_models is not None:
-        model_names = list(st.session_state.all_models['all_models'].keys())
-        current_model = st.session_state.selected_model
+    # ========== 显示当前模型信息 ==========
+    if st.session_state.model_info is not None:
+        st.markdown("#### 📌 当前模型")
+        model = st.session_state.model_info
+        st.info(f"**{model.get('name', '二次多项式回归')}**")
+        st.caption(f"R²={model['r2']:.3f} | MAPE={model['mape']:.1f}% | MAE={model['mae']:.2f}s")
         
-        selected = st.selectbox(
-            "选择模型",
-            model_names,
-            index=model_names.index(current_model) if current_model in model_names else 0,
-            key="model_selector"
-        )
-        
-        if selected != st.session_state.selected_model:
-            st.session_state.selected_model = selected
-            st.session_state.model_info = st.session_state.all_models['all_models'][selected]
-            st.session_state.last_prediction_result = None
-            st.session_state.chart_fig = create_chart(st.session_state.model_info)
-            st.rerun()
-        
-        # 显示模型对比
-        with st.expander("📊 模型对比"):
-            st.write("| 模型 | R² | MAPE | MAE |")
-            st.write("|------|-----|------|-----|")
-            for name, info in st.session_state.all_models['all_models'].items():
-                is_best = "⭐ " if name == st.session_state.all_models['best_model_name'] else ""
-                st.write(f"| {is_best}{name} | {info['r2']:.3f} | {info['mape']:.1f}% | {info['mae']:.2f} |")
-    else:
-        st.info("请先上传数据")
-    
-    st.markdown("---")
-    
-    # ========== 残差分析 ==========
-    st.markdown("#### 📉 残差分析")
-    
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        if st.button("📊 查看残差分析", use_container_width=True):
-            st.session_state.show_residual_plot = not st.session_state.show_residual_plot
-            st.rerun()
-    
-    with col2:
-        if st.session_state.show_residual_plot:
-            if st.button("✖️ 收起", use_container_width=True):
-                st.session_state.show_residual_plot = False
-                st.rerun()
-    
-    if st.session_state.show_residual_plot:
-        if st.session_state.model_info is not None:
-            if 'y_pred' in st.session_state.model_info and 'y_true' in st.session_state.model_info:
-                fig = create_residual_plot(st.session_state.model_info, st.session_state.selected_model)
-                st.pyplot(fig)
-                plt.close(fig)
-                st.caption(f"残差统计：均值 {np.mean(st.session_state.model_info['y_true'] - st.session_state.model_info['y_pred']):.2f}s，标准差 {np.std(st.session_state.model_info['y_true'] - st.session_state.model_info['y_pred']):.2f}s")
-            else:
-                st.info("当前模型不支持残差分析")
-        else:
-            st.info("请先上传数据")
+        # 如果有其他候选模型，显示对比信息（但不提供切换）
+        if len(st.session_state.all_candidates) > 1:
+            with st.expander("📊 模型对比"):
+                st.write("| 模型 | R² | MAPE | MAE |")
+                st.write("|------|-----|------|-----|")
+                for c in st.session_state.all_candidates:
+                    is_best = "⭐ " if c['name'] == model.get('name') else ""
+                    st.write(f"| {is_best}{c['name']} | {c['r2']:.3f} | {c['mape']:.1f}% | {c['mae']:.2f} |")
     
     st.markdown("---")
     
@@ -721,19 +645,19 @@ with st.sidebar:
     
     col1, col2 = st.columns([3, 1])
     with col1:
-        if st.button("📊 查看数据分布", use_container_width=True, key="density_btn"):
+        if st.button("📊 查看数据分布", use_container_width=True):
             st.session_state.show_density_chart = not st.session_state.show_density_chart
             st.rerun()
     
     with col2:
         if st.session_state.show_density_chart:
-            if st.button("✖️ 收起", use_container_width=True, key="density_close"):
+            if st.button("✖️ 收起", use_container_width=True):
                 st.session_state.show_density_chart = False
                 st.rerun()
     
     if st.session_state.show_density_chart:
         if st.session_state.model_info is not None:
-            fig = create_density_chart({'smt': st.session_state.model_info})
+            fig = create_density_chart(st.session_state.model_info)
             st.pyplot(fig)
             plt.close(fig)
             
@@ -770,12 +694,14 @@ with st.sidebar:
                 df_raw = df_raw.dropna(subset=['单板点数', '标准工时'])
                 save_smt_data(df_raw)
                 st.session_state.df_raw = df_raw
-                st.session_state.all_models = train_multiple_models(df_raw)
-                if st.session_state.all_models is not None:
-                    best_name = st.session_state.all_models['best_model_name']
-                    st.session_state.selected_model = best_name
-                    st.session_state.model_info = st.session_state.all_models['all_models'][best_name]
-                    st.session_state.chart_fig = create_chart(st.session_state.model_info)
+                best_model, candidates = train_and_select_best_model(df_raw)
+                if best_model is not None:
+                    st.session_state.model_info = best_model
+                    st.session_state.all_candidates = candidates
+                    st.session_state.chart_fig = create_chart(best_model)
+                else:
+                    st.session_state.model_info = None
+                    st.session_state.all_candidates = []
                 st.session_state.last_prediction_result = None
                 st.success(f"✅ 已上传，共 {len(df_raw)} 行")
                 st.rerun()
@@ -788,9 +714,10 @@ with st.sidebar:
 st.markdown("<h1 style='text-align: center;'>🤖 SMT 工时预测系统 · AI智能体</h1>", unsafe_allow_html=True)
 st.markdown("<hr style='margin: 0.5rem 0;'>", unsafe_allow_html=True)
 
-# 显示当前模型信息 - 修复f-string语法错误
+# 显示当前模型信息
 if st.session_state.model_info is not None:
-    st.info(f"📌 当前模型：**{st.session_state.selected_model}** | R²={st.session_state.model_info['r2']:.3f} | MAPE={st.session_state.model_info['mape']:.1f}%")
+    model = st.session_state.model_info
+    st.info(f"📌 当前模型：**{model.get('name', '二次多项式回归')}** | R²={model['r2']:.3f} | MAPE={model['mape']:.1f}% | 数据点={model['sample_count']}")
 
 # ============================================================
 # 第一行：左右两栏
