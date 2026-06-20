@@ -129,7 +129,9 @@ def train_models(df):
             'x_min': df_clean['单板点数'].min(),
             'x_max': df_clean['单板点数'].max(),
             'y_min': df_clean['标准工时'].min(),
-            'y_max': df_clean['标准工时'].max()
+            'y_max': df_clean['标准工时'].max(),
+            'x_mean': df_clean['单板点数'].mean(),
+            'y_mean': df_clean['标准工时'].mean()
         }
     
     return models
@@ -194,21 +196,41 @@ def plot_chart(models, points=None, predicted=None, line_type="SMT"):
     return fig
 
 # ============================================================
-# AI对话 - 直接从对比图（模型数据）获取信息，不依赖预测模块
+# AI对话 - 第一步给精准答案+范围，第二步详细分析
 # ============================================================
 def chat_with_ai(user_message, models=None, line_type="SMT"):
     headers = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
 
-    # 检查是否有模型数据
     if models is not None and 'smt' in models:
         model_info = models['smt']
         
-        # 提取图表数据（对比图的核心信息）
-        df = model_info['data']
-        x_data = df['单板点数'].tolist()
-        y_data = df['标准工时'].tolist()
+        # 提取用户输入的点数
+        numbers = re.findall(r'\d+', user_message)
+        target_points = int(numbers[0]) if numbers else None
         
-        # 计算数据分布统计
+        # 如果用户输入了具体点数，计算预测值
+        if target_points is not None and target_points > 0:
+            X = np.array([[target_points]])
+            X_poly = model_info['poly'].transform(X)
+            pred_time = model_info['model'].predict(X_poly)[0]
+            lower_bound = pred_time * (1 - model_info['mape'] / 100)
+            upper_bound = pred_time * (1 + model_info['mape'] / 100)
+            
+            prediction_line = f"""
+  • 输入点数：{target_points} 点
+  • 预测工时：{pred_time:.2f} 秒
+  • 预测范围：{lower_bound:.2f} ~ {upper_bound:.2f} 秒
+            """
+        else:
+            prediction_line = """
+  • 请先输入具体点数（如 100），我将给出精准预测
+            """
+            target_points = None
+            pred_time = None
+            lower_bound = None
+            upper_bound = None
+        
+        # 构建图表数据摘要
         data_summary = f"""
 【对比图（散点图与拟合曲线）数据摘要】
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -216,55 +238,73 @@ def chat_with_ai(user_message, models=None, line_type="SMT"):
   • 数据点数量：{model_info['sample_count']} 个
   • 点数范围：{model_info['x_min']} ~ {model_info['x_max']} 点
   • 工时范围：{model_info['y_min']:.1f} ~ {model_info['y_max']:.1f} 秒
+  • 点数平均值：{model_info['x_mean']:.1f} 点
+  • 工时平均值：{model_info['y_mean']:.1f} 秒
 
 📈 拟合曲线（二次多项式回归）
   • R²（决定系数）：{model_info['r2']:.3f}
   • MAPE（平均绝对百分比误差）：{model_info['mape']:.1f}%
   • MAE（平均绝对误差）：{model_info['mae']:.2f} 秒
-
-📌 数据分布特征
-  • 点数平均值：{np.mean(x_data):.1f} 点
-  • 工时平均值：{np.mean(y_data):.1f} 秒
-  • 点数中位数：{np.median(x_data):.1f} 点
-  • 工时中位数：{np.median(y_data):.1f} 秒
-
-📐 拟合曲线公式（二次多项式）
-  • 根据二次多项式回归拟合，曲线平滑上升/下降
-  • 反映了点数与工时之间的整体变化趋势
         """
         
-        system_prompt = f"""你是SMT工时预测数据分析助手。
+        # 根据用户是否输入点数，构建不同的系统提示
+        if target_points is not None and pred_time is not None:
+            system_prompt = f"""你是SMT工时预测数据分析助手。
 
 【核心规则 - 必须100%遵守】：
 1. 你只能基于上面的【对比图数据摘要】中的数据进行分析
-2. 这些数据直接来自"散点图与拟合曲线"图表
-3. 不要说任何不在这个数据摘要中的内容
-4. 禁止使用："行业基准"、"行业标准"、"通常"、"一般"、"应该"等词汇
-5. 禁止给出"优化建议"、"改进建议"等超出数据范围的内容
-6. 所有分析必须基于图表数据，从数据本身出发
+2. 第一步：先给出基于拟合曲线的精准预测答案和范围
+3. 第二步：再进行详细的数据分析
+4. 禁止使用："行业基准"、"行业标准"、"通常"、"一般"等词汇
+5. 所有分析必须基于图表数据
 
 {data_summary}
 
-请根据用户的问题进行分析。如果用户输入了具体点数（如 100），你可以：
-1. 参考图表中附近的数据点
-2. 根据拟合曲线趋势给出估算
+【基于拟合曲线的精准预测】
+（直接输出以下预测结果，这是第一步）
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📌 预测结果（基于二次多项式拟合曲线）
+  • 输入点数：{target_points} 点
+  • 预测工时：{pred_time:.2f} 秒
+  • 预测范围（±MAPE）：{lower_bound:.2f} ~ {upper_bound:.2f} 秒
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-请按以下格式输出（严格遵循）：
+【详细数据分析】（这是第二步，基于图表数据的深入分析）
+请按以下格式输出：
 
-【图表数据解读】
-（基于数据摘要，说明数据的整体分布特征）
+1. 数据分布解读：
+   - 观察散点图，数据点分布在...（描述数据是否集中在拟合曲线附近）
+   - 点数范围覆盖了 {model_info['x_min']} ~ {model_info['x_max']} 点
+   - 工时范围覆盖了 {model_info['y_min']:.1f} ~ {model_info['y_max']:.1f} 秒
 
-【针对用户问题的分析】
-（根据用户输入的点数或问题，结合图表数据给出具体分析）
+2. 拟合曲线解读：
+   - 二次多项式回归曲线显示，随着点数增加，工时呈...趋势
+   - R²={model_info['r2']:.3f}，说明拟合曲线能解释 {model_info['r2']*100:.1f}% 的数据变化
+   - MAPE={model_info['mape']:.1f}%，预测偏差范围在 ±{model_info['mape']:.1f}% 内
+   - MAE={model_info['mae']:.2f}秒，平均偏差约 {model_info['mae']:.2f} 秒
 
-【数据可信度评估】
-（基于R²、MAPE、MAE三个指标说明模型拟合程度）
+3. 当前预测点分析：
+   - {target_points} 点位于数据范围 {model_info['x_min']}~{model_info['x_max']} 点之间
+   - 预测工时 {pred_time:.2f} 秒，在工时范围 {model_info['y_min']:.1f}~{model_info['y_max']:.1f} 秒内
+   - 该预测点的可信度：...（基于R²和MAPE综合判断）
 
-【总结】
-（基于图表数据的总结性结论）"""
-        
+4. 总结：
+   - 基于拟合曲线，{target_points} 点的预测工时为 {pred_time:.2f} 秒
+   - 预测范围 {lower_bound:.2f} ~ {upper_bound:.2f} 秒
+   - 该预测结果（可信/基本可信/需谨慎），因为...（基于数据指标说明）"""
+        else:
+            system_prompt = f"""你是SMT工时预测数据分析助手。
+
+【核心规则】：
+1. 你只能基于上面的【对比图数据摘要】中的数据进行分析
+2. 请提示用户输入具体点数（如 100），然后给出精准预测
+
+{data_summary}
+
+请告诉用户输入具体点数，以便基于拟合曲线给出精准预测。"""
+
     else:
-        system_prompt = f"""你是SMT工时预测数据分析助手。
+        system_prompt = """你是SMT工时预测数据分析助手。
 当前还没有上传数据，请提示用户先在左侧上传Excel数据文件（包含：单板点数、标准工时两列）。"""
 
     messages = [{"role": "system", "content": system_prompt}]
@@ -277,7 +317,7 @@ def chat_with_ai(user_message, models=None, line_type="SMT"):
         "model": "deepseek-ai/DeepSeek-V3",
         "messages": messages,
         "temperature": 0.1,
-        "max_tokens": 1500
+        "max_tokens": 2000
     }
 
     try:
@@ -466,7 +506,7 @@ with right_col:
             """, unsafe_allow_html=True)
 
 # ============================================================
-# 第二行：AI分析 - 直接从对比图获取数据
+# 第二行：AI分析 - 第一步给精准答案，第二步详细分析
 # ============================================================
 st.markdown("---")
 
@@ -474,7 +514,7 @@ with st.container():
     st.markdown("<h3 style='text-align: center;'>💬 AI 分 析</h3>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center; color: #888; font-size: 0.85rem;'>基于对比图（散点图与拟合曲线）的数据分析</p>", unsafe_allow_html=True)
     
-    chat_container = st.container(height=350)
+    chat_container = st.container(height=400)
     with chat_container:
         for msg in st.session_state.messages:
             if msg["role"] == "user":
@@ -496,7 +536,6 @@ with st.container():
         st.session_state.messages.append({"role": "user", "content": user_input})
         save_chat_history(st.session_state.messages)
         
-        # 直接从模型数据获取，不依赖预测模块
         with st.spinner("分析中..."):
             response = chat_with_ai(user_input, st.session_state.models)
         
