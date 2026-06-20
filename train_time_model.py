@@ -102,7 +102,6 @@ def save_smt_data(df):
     df.to_excel(DATA_FILE_SMT, index=False)
 
 # ============================================================
-# ============================================================
 # 🤖 智能体工具函数
 # ============================================================
 
@@ -130,130 +129,6 @@ def detect_outliers(df, column='单板点数', method='iqr', threshold=1.5):
         'percentage': len(outliers) / len(data) * 100 if len(data) > 0 else 0
     }
 
-def train_multiple_models(df):
-    """训练多个模型并返回最佳"""
-    df_clean = df.dropna(subset=['单板点数', '标准工时'])
-    df_clean = df_clean[(df_clean['单板点数'] > 0) & (df_clean['标准工时'] > 0)]
-    
-    if len(df_clean) < 5:
-        return None
-    
-    X = df_clean[['单板点数']].values
-    y = df_clean['标准工时'].values
-    
-    models = {}
-    results = []
-    
-    # 1. 多项式回归（2次）
-    try:
-        poly = PolynomialFeatures(degree=2)
-        X_poly = poly.fit_transform(X)
-        model = LinearRegression()
-        model.fit(X_poly, y)
-        y_pred = model.predict(X_poly)
-        r2 = r2_score(y, y_pred)
-        mae = mean_absolute_error(y, y_pred)
-        mape = np.mean(np.abs((y - y_pred) / y)) * 100
-        cv_score = np.mean(cross_val_score(model, X_poly, y, cv=min(5, len(df_clean))))
-        models['多项式回归(2次)'] = {
-            'model': model,
-            'poly': poly,
-            'r2': r2,
-            'mae': mae,
-            'mape': mape,
-            'cv_score': cv_score,
-            'type': 'polynomial'
-        }
-        results.append(('多项式回归(2次)', r2, mae, mape))
-    except:
-        pass
-    
-    # 2. 多项式回归（3次）
-    try:
-        poly = PolynomialFeatures(degree=3)
-        X_poly = poly.fit_transform(X)
-        model = LinearRegression()
-        model.fit(X_poly, y)
-        y_pred = model.predict(X_poly)
-        r2 = r2_score(y, y_pred)
-        mae = mean_absolute_error(y, y_pred)
-        mape = np.mean(np.abs((y - y_pred) / y)) * 100
-        cv_score = np.mean(cross_val_score(model, X_poly, y, cv=min(5, len(df_clean))))
-        models['多项式回归(3次)'] = {
-            'model': model,
-            'poly': poly,
-            'r2': r2,
-            'mae': mae,
-            'mape': mape,
-            'cv_score': cv_score,
-            'type': 'polynomial'
-        }
-        results.append(('多项式回归(3次)', r2, mae, mape))
-    except:
-        pass
-    
-    # 3. 随机森林
-    try:
-        model = RandomForestRegressor(n_estimators=100, random_state=42)
-        model.fit(X, y)
-        y_pred = model.predict(X)
-        r2 = r2_score(y, y_pred)
-        mae = mean_absolute_error(y, y_pred)
-        mape = np.mean(np.abs((y - y_pred) / y)) * 100
-        cv_score = np.mean(cross_val_score(model, X, y, cv=min(5, len(df_clean))))
-        models['随机森林'] = {
-            'model': model,
-            'poly': None,
-            'r2': r2,
-            'mae': mae,
-            'mape': mape,
-            'cv_score': cv_score,
-            'type': 'random_forest'
-        }
-        results.append(('随机森林', r2, mae, mape))
-    except:
-        pass
-    
-    # 4. Ridge回归
-    try:
-        poly = PolynomialFeatures(degree=2)
-        X_poly = poly.fit_transform(X)
-        scaler = StandardScaler()
-        X_scaled = scaler.fit_transform(X_poly)
-        model = Ridge(alpha=1.0)
-        model.fit(X_scaled, y)
-        y_pred = model.predict(X_scaled)
-        r2 = r2_score(y, y_pred)
-        mae = mean_absolute_error(y, y_pred)
-        mape = np.mean(np.abs((y - y_pred) / y)) * 100
-        cv_score = np.mean(cross_val_score(model, X_scaled, y, cv=min(5, len(df_clean))))
-        models['Ridge回归'] = {
-            'model': model,
-            'poly': poly,
-            'scaler': scaler,
-            'r2': r2,
-            'mae': mae,
-            'mape': mape,
-            'cv_score': cv_score,
-            'type': 'ridge'
-        }
-        results.append(('Ridge回归', r2, mae, mape))
-    except:
-        pass
-    
-    # 选择最佳模型（按R²排序）
-    if results:
-        best = max(results, key=lambda x: x[1])
-        return {
-            'best_model_name': best[0],
-            'best_model': models[best[0]],
-            'all_models': models,
-            'comparison': results,
-            'data': df_clean
-        }
-    
-    return None
-
 def auto_analyze_data(df):
     """自动分析数据质量"""
     if df is None or len(df) == 0:
@@ -272,14 +147,14 @@ def auto_analyze_data(df):
     for col in numeric_cols:
         if col in ['单板点数', '标准工时']:
             analysis[col] = {
-                'mean': df[col].mean(),
-                'median': df[col].median(),
-                'std': df[col].std(),
-                'min': df[col].min(),
-                'max': df[col].max(),
-                'q1': df[col].quantile(0.25),
-                'q3': df[col].quantile(0.75),
-                'missing': df[col].isna().sum()
+                'mean': float(df[col].mean()),
+                'median': float(df[col].median()),
+                'std': float(df[col].std()),
+                'min': float(df[col].min()),
+                'max': float(df[col].max()),
+                'q1': float(df[col].quantile(0.25)),
+                'q3': float(df[col].quantile(0.75)),
+                'missing': int(df[col].isna().sum())
             }
     
     # 异常值检测
@@ -313,8 +188,6 @@ def generate_data_summary(df):
 - 中位数：{analysis.get('单板点数', {}).get('median', 0):.2f} 点
 - 标准差：{analysis.get('单板点数', {}).get('std', 0):.2f}
 - 范围：{analysis.get('单板点数', {}).get('min', 0):.0f} ~ {analysis.get('单板点数', {}).get('max', 0):.0f} 点
-- Q1：{analysis.get('单板点数', {}).get('q1', 0):.0f} 点
-- Q3：{analysis.get('单板点数', {}).get('q3', 0):.0f} 点
 
 📈 **标准工时统计**
 - 平均值：{analysis.get('标准工时', {}).get('mean', 0):.2f} 秒
@@ -335,7 +208,7 @@ def generate_data_summary(df):
     return summary
 
 # ============================================================
-# 训练模型（保留原功能）
+# 训练模型
 # ============================================================
 def train_models(df):
     models = {}
@@ -361,14 +234,14 @@ def train_models(df):
             'mape': np.mean(np.abs((y - y_pred) / y)) * 100,
             'data': df_clean,
             'sample_count': len(df_clean),
-            'x_min': df_clean['单板点数'].min(),
-            'x_max': df_clean['单板点数'].max(),
-            'y_min': df_clean['标准工时'].min(),
-            'y_max': df_clean['标准工时'].max(),
-            'x_mean': df_clean['单板点数'].mean(),
-            'y_mean': df_clean['标准工时'].mean(),
-            'x_std': df_clean['单板点数'].std(),
-            'y_std': df_clean['标准工时'].std()
+            'x_min': float(df_clean['单板点数'].min()),
+            'x_max': float(df_clean['单板点数'].max()),
+            'y_min': float(df_clean['标准工时'].min()),
+            'y_max': float(df_clean['标准工时'].max()),
+            'x_mean': float(df_clean['单板点数'].mean()),
+            'y_mean': float(df_clean['标准工时'].mean()),
+            'x_std': float(df_clean['单板点数'].std()),
+            'y_std': float(df_clean['标准工时'].std())
         }
     
     return models
@@ -386,10 +259,10 @@ def predict_time(points, models=None):
     
     return {
         'points': points,
-        'time': pred,
-        'r2': models['smt']['r2'],
-        'mape': models['smt']['mape'],
-        'mae': models['smt']['mae']
+        'time': float(pred),
+        'r2': float(models['smt']['r2']),
+        'mape': float(models['smt']['mape']),
+        'mae': float(models['smt']['mae'])
     }
 
 # ============================================================
@@ -432,7 +305,6 @@ def create_chart(models, points=None, predicted_time=None, line_type="SMT"):
     return fig
 
 # ============================================================
-# ============================================================
 # 🤖 智能体核心 - 带工具调用的AI对话
 # ============================================================
 
@@ -448,9 +320,6 @@ def agent_chat(user_message, models=None, prediction_result=None, df_raw=None, l
         knowledge_base.append("【📁 原始数据】")
         knowledge_base.append(f"- 数据行数：{len(df_raw)} 行")
         knowledge_base.append(f"- 列名：{', '.join(df_raw.columns.tolist())}")
-        knowledge_base.append(f"- 前5行数据预览：")
-        preview = df_raw.head(5).to_string()
-        knowledge_base.append(f"```\n{preview}\n```")
         knowledge_base.append("")
     
     # 2. 自动数据分析结果
@@ -484,11 +353,10 @@ def agent_chat(user_message, models=None, prediction_result=None, df_raw=None, l
     
     # 5. 可用工具列表
     knowledge_base.append("【🔧 可用工具】")
-    knowledge_base.append("1. `detect_outliers()` - 检测数据中的异常值")
-    knowledge_base.append("2. `auto_analyze_data()` - 自动分析数据质量")
-    knowledge_base.append("3. `train_multiple_models()` - 训练多个模型并选择最佳")
-    knowledge_base.append("4. `predict_time()` - 根据点数预测工时")
-    knowledge_base.append("5. `generate_data_summary()` - 生成数据摘要报告")
+    knowledge_base.append("1. 异常值检测 - 识别数据中的离群点")
+    knowledge_base.append("2. 数据质量分析 - 自动评估数据质量")
+    knowledge_base.append("3. 趋势预测 - 基于拟合曲线预测工时")
+    knowledge_base.append("4. 相关性分析 - 分析变量间的关系")
     knowledge_base.append("")
     
     full_knowledge = "\n".join(knowledge_base)
@@ -509,7 +377,6 @@ def agent_chat(user_message, models=None, prediction_result=None, df_raw=None, l
 3. **模型评估**：评估拟合曲线的质量，判断预测可信度
 4. **趋势分析**：分析点数与工时的变化趋势
 5. **预测分析**：基于拟合曲线给出精准预测和范围
-6. **工具调用**：需要时可以调用分析工具进行深入分析
 
 【📋 分析规则】
 1. 所有分析必须基于知识库中的数据
@@ -534,12 +401,6 @@ def agent_chat(user_message, models=None, prediction_result=None, df_raw=None, l
 **📈 数据解读**
 
 （分析数据分布、拟合曲线质量、预测点位置）
-
----
-
-**🔍 深度分析**（可选）
-
-（如果发现异常值、数据质量问题时，主动指出）
 
 ---
 
@@ -787,7 +648,64 @@ st.markdown("---")
 
 with st.container():
     st.markdown("<h3 style='text-align: center;'>🤖 AI 智能体分析</h3>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center; color: #888; font-size: 0.85rem;'>智能体拥有完整权限：数据感知 · 模型分析 · 异常检测 · 趋势预测 · 工具调用</p>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: #888; font-size: 0.85rem;'>智能体拥有完整权限：数据感知 · 模型分析 · 异常检测 · 趋势预测</p>", unsafe_allow_html=True)
     
-    # 显示智能体状态
-    status_col1, status_col2, status_col3, status_col4 = st
+    # 显示智能体状态 - 修复错误
+    status_col1, status_col2, status_col3, status_col4 = st.columns(4)
+    with status_col1:
+        if st.session_state.df_raw is not None:
+            st.success("📁 数据已加载")
+        else:
+            st.warning("📁 无数据")
+    
+    with status_col2:
+        if st.session_state.models is not None and 'smt' in st.session_state.models:
+            st.success("📈 模型就绪")
+        else:
+            st.warning("📈 未训练")
+    
+    with status_col3:
+        if st.session_state.last_prediction_result is not None:
+            st.success("🎯 已预测")
+        else:
+            st.warning("🎯 待预测")
+    
+    with status_col4:
+        st.info("🧠 智能体在线")
+    
+    st.markdown("---")
+    
+    chat_container = st.container(height=400)
+    with chat_container:
+        for msg in st.session_state.messages:
+            if msg["role"] == "user":
+                st.chat_message("user").write(msg["content"])
+            elif msg["role"] == "assistant":
+                st.chat_message("assistant").markdown(msg["content"])
+    
+    col_input, col_btn = st.columns([6, 1])
+    
+    with col_input:
+        user_input = st.chat_input("输入点数（如 100）或提问...", key="ai_chat_input")
+    
+    with col_btn:
+        if st.button("🗑️ 清空对话", use_container_width=True, key="clear_chat_btn"):
+            st.session_state.messages = clear_chat_history()
+            st.rerun()
+    
+    if user_input:
+        st.session_state.messages.append({"role": "user", "content": user_input})
+        save_chat_history(st.session_state.messages)
+        
+        with st.spinner("🧠 智能体思考中..."):
+            response = agent_chat(
+                user_input, 
+                models=st.session_state.models,
+                prediction_result=st.session_state.last_prediction_result,
+                df_raw=st.session_state.df_raw
+            )
+        
+        st.session_state.messages.append({"role": "assistant", "content": response})
+        save_chat_history(st.session_state.messages)
+        
+        st.rerun()
