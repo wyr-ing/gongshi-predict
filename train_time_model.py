@@ -27,9 +27,25 @@ plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'Arial Unicode M
 plt.rcParams['axes.unicode_minus'] = False
 
 # ============================================================
-# 配置
+# 配置 - 使用多个可能的存储路径
 # ============================================================
-DATA_FILE_SMT = "smt_data.xlsx"
+# 尝试多个可能的存储位置
+POSSIBLE_DATA_PATHS = [
+    "smt_data.xlsx",  # 当前目录
+    os.path.join(os.path.expanduser("~"), "smt_data.xlsx"),  # 用户目录
+    "/tmp/smt_data.xlsx",  # Linux临时目录（部分云平台会保留）
+]
+
+# 查找第一个存在的文件，或使用当前目录
+DATA_FILE_SMT = None
+for path in POSSIBLE_DATA_PATHS:
+    if os.path.exists(path):
+        DATA_FILE_SMT = path
+        break
+
+if DATA_FILE_SMT is None:
+    DATA_FILE_SMT = "smt_data.xlsx"  # 默认使用当前目录
+
 API_KEY = "sk-fvxkdwbhjcokafftooavzvedrlmmrffotehplsnfnjupogqb"
 BASE_URL = "https://api.siliconflow.cn/v1"
 HISTORY_FILE = "prediction_history.json"
@@ -68,12 +84,21 @@ def load_smt_data():
                 if col not in df.columns:
                     return None
             return df
-        except:
+        except Exception as e:
+            st.warning(f"加载数据失败: {e}")
             return None
     return None
 
 def save_smt_data(df):
+    # 保存到文件
     df.to_excel(DATA_FILE_SMT, index=False)
+    # 同时保存一份到用户目录作为备份
+    try:
+        backup_path = os.path.join(os.path.expanduser("~"), "smt_data_backup.xlsx")
+        df.to_excel(backup_path, index=False)
+    except:
+        pass
+    return True
 
 # ============================================================
 # 训练模型（单板点数 → 标准工时）
@@ -248,12 +273,15 @@ if "screen_width" not in st.session_state:
     st.session_state.screen_width = 1200
 
 # ============================================================
-# 加载数据
+# 加载数据（优先从session_state恢复，其次从文件加载）
 # ============================================================
-smt_df = load_smt_data()
-if smt_df is not None and len(smt_df) > 0:
-    st.session_state.df_raw = smt_df
-    st.session_state.models = train_models(smt_df)
+# 如果session_state中没有数据，尝试从文件加载
+if st.session_state.df_raw is None:
+    smt_df = load_smt_data()
+    if smt_df is not None and len(smt_df) > 0:
+        st.session_state.df_raw = smt_df
+        st.session_state.models = train_models(smt_df)
+        st.success(f"✅ 已从文件加载数据，共 {len(smt_df)} 行")
 
 # ============================================================
 # 侧边栏
@@ -264,6 +292,7 @@ with st.sidebar:
     if st.session_state.models is not None and 'smt' in st.session_state.models:
         sample_count = st.session_state.models['smt']['sample_count']
         st.success(f"✅ 数据行数: {sample_count}")
+        st.caption(f"📁 数据文件: {os.path.basename(DATA_FILE_SMT)}")
     else:
         st.warning("⚠️ 暂无数据，请上传")
 
@@ -289,10 +318,12 @@ with st.sidebar:
             missing = [c for c in required if c not in df_raw.columns]
             if not missing:
                 df_raw = df_raw.dropna(subset=['单板点数', '标准工时'])
+                # 保存到文件
                 save_smt_data(df_raw)
-                st.session_state.models = train_models(df_raw)
+                # 更新session_state
                 st.session_state.df_raw = df_raw
-                st.success(f"✅ 已上传，共 {len(df_raw)} 行")
+                st.session_state.models = train_models(df_raw)
+                st.success(f"✅ 已上传并保存，共 {len(df_raw)} 行")
                 st.rerun()
             else:
                 st.error(f"❌ 缺少列：{missing}")
@@ -305,6 +336,28 @@ with st.sidebar:
         | 单板点数 | 整数 |
         | 标准工时 | 浮点数（秒） |
         """)
+    
+    # 添加数据管理功能
+    st.markdown("---")
+    with st.expander("🔄 数据管理"):
+        if st.button("🔄 重新加载数据", use_container_width=True):
+            smt_df = load_smt_data()
+            if smt_df is not None and len(smt_df) > 0:
+                st.session_state.df_raw = smt_df
+                st.session_state.models = train_models(smt_df)
+                st.success("数据已重新加载")
+                st.rerun()
+            else:
+                st.warning("未找到数据文件")
+        
+        if st.button("🗑️ 清空数据", use_container_width=True):
+            if os.path.exists(DATA_FILE_SMT):
+                os.remove(DATA_FILE_SMT)
+            st.session_state.df_raw = None
+            st.session_state.models = None
+            st.session_state.last_prediction_result = None
+            st.success("数据已清空")
+            st.rerun()
 
 # ============================================================
 # 主界面
@@ -371,6 +424,18 @@ with right_col:
                         'points': points,
                         'time': result['time']
                     }
+                    # 记录预测历史
+                    st.session_state.prediction_history.append({
+                        'time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        'points': points,
+                        'predicted_time': result['time']
+                    })
+                    # 保存历史
+                    try:
+                        with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
+                            json.dump(st.session_state.prediction_history[-100:], f)
+                    except:
+                        pass
                     st.rerun()
             else:
                 st.error("请先上传数据")
