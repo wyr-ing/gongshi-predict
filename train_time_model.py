@@ -102,7 +102,7 @@ def save_smt_data(df):
     df.to_excel(DATA_FILE_SMT, index=False)
 
 # ============================================================
-# 数据分布工具
+# 🤖 智能体工具函数
 # ============================================================
 
 def get_data_density_zones(df, column='单板点数'):
@@ -128,47 +128,18 @@ def get_data_density_zones(df, column='单板点数'):
         zones['density_areas'][labels[i]] = {
             'range': f'{bins[i]:.0f}~{bins[i+1]:.0f}',
             'count': count,
-            'percentage': count / len(data) * 100 if len(data) > 0 else 0
+            'percentage': count / len(data) * 100
         }
     
     return zones
 
-def create_density_chart(models):
-    """创建数据分布密度图"""
-    screen = get_screen_size()
-    
-    fig, ax = plt.subplots(figsize=(screen['fig_width'], screen['fig_height'] * 0.6), dpi=100)
-    
-    if 'smt' in models:
-        model_info = models['smt']
-        df = model_info['data']
-        x = df['单板点数']
-        
-        n, bins, patches = ax.hist(x, bins=20, color='#1f77b4', alpha=0.7, edgecolor='white', linewidth=1)
-        
-        q1 = x.quantile(0.25)
-        q2 = x.quantile(0.5)
-        q3 = x.quantile(0.75)
-        
-        ax.axvline(q1, color='orange', linestyle='--', linewidth=2, label=f'Q1 (25%): {q1:.0f}')
-        ax.axvline(q2, color='green', linestyle='--', linewidth=2, label=f'Q2 (50%): {q2:.0f}')
-        ax.axvline(q3, color='red', linestyle='--', linewidth=2, label=f'Q3 (75%): {q3:.0f}')
-        
-        ax.set_xlabel('Points (pts)', fontsize=screen['font_size'], fontweight='bold')
-        ax.set_ylabel('Frequency', fontsize=screen['font_size'], fontweight='bold')
-        ax.set_title('📊 Data Distribution (Points)', fontsize=screen['title_size'], fontweight='bold')
-        ax.legend(loc='upper right', fontsize=screen['legend_size'])
-        ax.grid(True, alpha=0.2)
-    
-    plt.tight_layout()
-    return fig
-
 def auto_analyze_data(df):
-    """自动分析数据"""
+    """自动分析数据质量 - 只做统计"""
     if df is None or len(df) == 0:
         return {"error": "无数据"}
     
     analysis = {}
+    
     analysis['row_count'] = len(df)
     analysis['columns'] = df.columns.tolist()
     
@@ -212,15 +183,21 @@ def generate_data_summary(df):
 📈 **单板点数统计**
 - 平均值：{analysis.get('单板点数', {}).get('mean', 0):.2f} 点
 - 中位数：{analysis.get('单板点数', {}).get('median', 0):.2f} 点
-- 标准差：{analysis.get('单板点数', {}).get('std', 0):.2f}
 - 范围：{analysis.get('单板点数', {}).get('min', 0):.0f} ~ {analysis.get('单板点数', {}).get('max', 0):.0f} 点
 
 📈 **标准工时统计**
 - 平均值：{analysis.get('标准工时', {}).get('mean', 0):.2f} 秒
 - 中位数：{analysis.get('标准工时', {}).get('median', 0):.2f} 秒
-- 标准差：{analysis.get('标准工时', {}).get('std', 0):.2f}
 - 范围：{analysis.get('标准工时', {}).get('min', 0):.2f} ~ {analysis.get('标准工时', {}).get('max', 0):.2f} 秒
+
+📊 **数据分布**
+- 数据点总数：{analysis.get('row_count', 0)} 个
+- 不同点数种类：{analysis.get('density_zones', {}).get('unique_values', 0)} 种
 """
+    
+    density = analysis.get('density_zones', {}).get('density_areas', {})
+    for area, info in density.items():
+        summary += f"- {area}：{info['range']} 点，{info['count']} 个 ({info['percentage']:.1f}%)\n"
     
     if analysis.get('correlation'):
         corr = analysis['correlation']
@@ -323,6 +300,38 @@ def create_chart(models, points=None, predicted_time=None, line_type="SMT"):
                  fontsize=screen['title_size'], fontweight='bold', pad=15)
     ax.legend(loc='upper left', fontsize=screen['legend_size'])
     ax.grid(True, alpha=0.25)
+    
+    plt.tight_layout()
+    return fig
+
+# ============================================================
+# 数据分布图
+# ============================================================
+def create_density_chart(models):
+    screen = get_screen_size()
+    
+    fig, ax = plt.subplots(figsize=(screen['fig_width'], screen['fig_height'] * 0.6), dpi=100)
+    
+    if 'smt' in models:
+        model_info = models['smt']
+        df = model_info['data']
+        x = df['单板点数']
+        
+        n, bins, patches = ax.hist(x, bins=20, color='#1f77b4', alpha=0.7, edgecolor='white', linewidth=1)
+        
+        q1 = x.quantile(0.25)
+        q2 = x.quantile(0.5)
+        q3 = x.quantile(0.75)
+        
+        ax.axvline(q1, color='orange', linestyle='--', linewidth=2, label=f'Q1 (25%): {q1:.0f}')
+        ax.axvline(q2, color='green', linestyle='--', linewidth=2, label=f'Q2 (50%): {q2:.0f}')
+        ax.axvline(q3, color='red', linestyle='--', linewidth=2, label=f'Q3 (75%): {q3:.0f}')
+        
+        ax.set_xlabel('Points (pts)', fontsize=screen['font_size'], fontweight='bold')
+        ax.set_ylabel('Frequency', fontsize=screen['font_size'], fontweight='bold')
+        ax.set_title('📊 Data Distribution (Points)', fontsize=screen['title_size'], fontweight='bold')
+        ax.legend(loc='upper right', fontsize=screen['legend_size'])
+        ax.grid(True, alpha=0.2)
     
     plt.tight_layout()
     return fig
@@ -451,13 +460,9 @@ def hash_password(password):
 if "messages" not in st.session_state:
     st.session_state.messages = load_chat_history()
 
-for key in ['models', 'df_raw', 'last_prediction', 'last_prediction_result', 'chart_fig']:
+for key in ['models', 'df_raw', 'last_prediction', 'last_prediction_result', 'chart_fig', 'show_density']:
     if key not in st.session_state:
         st.session_state[key] = None
-
-# 控制数据分布图显示的状态
-if "show_density_chart" not in st.session_state:
-    st.session_state.show_density_chart = False
 
 if "upload_authorized" not in st.session_state:
     st.session_state.upload_authorized = False
@@ -466,7 +471,7 @@ if "screen_width" not in st.session_state:
     st.session_state.screen_width = 1200
 
 # ============================================================
-# 加载数据
+# 加载数据 - 从文件持久化加载
 # ============================================================
 smt_df = load_smt_data()
 if smt_df is not None and len(smt_df) > 0:
@@ -484,27 +489,26 @@ with st.sidebar:
     if st.session_state.models is not None and 'smt' in st.session_state.models:
         sample_count = st.session_state.models['smt']['sample_count']
         st.success(f"✅ 数据行数: {sample_count}")
+        st.caption(f"📁 数据文件: {DATA_FILE_SMT}")
     else:
         st.warning("⚠️ 暂无数据，请上传")
     
     st.markdown("---")
     st.markdown("#### 🔧 智能体工具")
     
-    # 查看数据分布 - 使用session_state控制显示
-    col1, col2 = st.columns([3, 1])
-    with col1:
+    # 查看数据分布 - 带取消功能
+    col_show, col_hide = st.columns(2)
+    with col_show:
         if st.button("📊 查看数据分布", use_container_width=True):
-            st.session_state.show_density_chart = not st.session_state.show_density_chart
+            st.session_state.show_density = True
+            st.rerun()
+    with col_hide:
+        if st.button("❌ 取消", use_container_width=True):
+            st.session_state.show_density = False
             st.rerun()
     
-    with col2:
-        if st.session_state.show_density_chart:
-            if st.button("✖️ 收起", use_container_width=True):
-                st.session_state.show_density_chart = False
-                st.rerun()
-    
-    # 显示数据分布图
-    if st.session_state.show_density_chart:
+    # 显示数据分布图（独立于聊天记录）
+    if st.session_state.show_density:
         if st.session_state.models is not None and 'smt' in st.session_state.models:
             fig = create_density_chart(st.session_state.models)
             st.pyplot(fig)
@@ -512,7 +516,7 @@ with st.sidebar:
             
             # 显示密度区域统计
             density = get_data_density_zones(st.session_state.df_raw, '单板点数')
-            st.write("**📊 数据分布区域：**")
+            st.write("**数据分布区域：**")
             for area, info in density.get('density_areas', {}).items():
                 st.write(f"- {area}：{info['range']} 点，{info['count']} 个 ({info['percentage']:.1f}%)")
         else:
@@ -540,13 +544,13 @@ with st.sidebar:
             missing = [c for c in required if c not in df_raw.columns]
             if not missing:
                 df_raw = df_raw.dropna(subset=['单板点数', '标准工时'])
-                save_smt_data(df_raw)
+                save_smt_data(df_raw)  # 保存到文件，持久化
                 st.session_state.models = train_models(df_raw)
                 st.session_state.df_raw = df_raw
                 st.session_state.last_prediction_result = None
                 if st.session_state.models is not None and 'smt' in st.session_state.models:
                     st.session_state.chart_fig = create_chart(st.session_state.models)
-                st.success(f"✅ 已上传，共 {len(df_raw)} 行")
+                st.success(f"✅ 已上传并保存，共 {len(df_raw)} 行")
                 st.rerun()
             else:
                 st.error(f"❌ 缺少列：{missing}")
@@ -711,6 +715,7 @@ with st.container():
     with col_btn:
         if st.button("🗑️ 清空对话", use_container_width=True, key="clear_chat_btn"):
             st.session_state.messages = clear_chat_history()
+            # 注意：清空对话不影响 show_density
             st.rerun()
     
     if user_input:
